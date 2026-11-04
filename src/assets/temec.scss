@@ -1,0 +1,103 @@
+// Temec brand overrides on top of the Sakai layout.
+// The topbar and sidebar stay charcoal in both light and dark modes, like temec.com.br.
+
+:root {
+    --brand-text-color: var(--p-primary-900); // deep amber, readable on light surfaces
+    --chrome-background: var(--p-surface-900);
+    --chrome-border: var(--p-surface-800);
+    --chrome-hover: var(--p-surface-800);
+    --chrome-text: var(--p-surface-100);
+    --chrome-text-muted: var(--p-surface-400);
+}
+
+:root[class*='app-dark'] {
+    --brand-text-color: var(--p-primary-500);
+    --chrome-background: var(--p-surface-950);
+}
+
+body {
+    font-family: 'Geist', 'Segoe UI', system-ui, sans-serif;
+}
+
+.text-brand {
+    color: var(--brand-text-color);
+}
+
+// Topbar
+.layout-topbar {
+    background-color: var(--chrome-background);
+    border-bottom: 3px solid var(--primary-color);
+
+    .layout-topbar-logo {
+        color: var(--chrome-text);
+
+        img {
+            height: 2.25rem;
+        }
+
+        .layout-topbar-app-name {
+            font-size: 1.125rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            padding-left: 0.75rem;
+            border-left: 1px solid var(--chrome-border);
+        }
+    }
+
+    .layout-topbar-action {
+        color: var(--chrome-text);
+
+        &:hover {
+            background-color: var(--chrome-hover);
+            color: var(--primary-color);
+        }
+    }
+
+    .layout-topbar-user {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        line-height: 1.2;
+        color: var(--chrome-text);
+
+        small {
+            color: var(--chrome-text-muted);
+        }
+    }
+}
+
+@media (max-width: 991px) {
+    .layout-topbar .layout-topbar-menu {
+        background-color: var(--chrome-background);
+        border-color: var(--chrome-border);
+    }
+}
+
+// Sidebar
+.layout-sidebar {
+    background-color: var(--chrome-background);
+}
+
+.layout-menu {
+    .layout-root-menuitem > .layout-menuitem-root-text {
+        color: var(--chrome-text-muted);
+    }
+
+    ul a {
+        color: var(--chrome-text);
+
+        &:hover {
+            background-color: var(--chrome-hover);
+        }
+
+        &.active-route {
+            color: var(--primary-color);
+            background-color: var(--chrome-hover);
+            box-shadow: inset 3px 0 0 var(--primary-color);
+        }
+    }
+}
+
+.layout-footer {
+    color: var(--text-color-secondary);
+}
