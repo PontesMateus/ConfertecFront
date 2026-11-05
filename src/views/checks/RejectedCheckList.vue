@@ -12,8 +12,8 @@ const loadError = ref('');
 
 const qtyFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 });
 
-function shipmentLabel(check) {
-    return `${check.shipment.record}-${check.shipment.recordReceipt}`;
+function shipmentLabel(shipment) {
+    return `${shipment.record}-${shipment.recordReceipt}`;
 }
 
 function formatQty(qty) {
@@ -59,18 +59,25 @@ onMounted(load);
 
             <Column header="Remessa" class="whitespace-nowrap">
                 <template #body="{ data }">
-                    <Button :label="shipmentLabel(data)" link class="p-0 font-medium" @click="router.push({ name: 'shipment', params: { shipmentUuid: data.shipment.uuid } })" />
-                    <div class="text-xs text-muted-color">{{ data.shipment.customer ?? '—' }}</div>
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">
+                        <Button :label="shipmentLabel(shipment)" link class="p-0 font-medium" @click="router.push({ name: 'shipment', params: { shipmentUuid: shipment.uuid } })" />
+                        <div class="text-xs text-muted-color">{{ shipment.customer ?? '—' }}</div>
+                    </div>
+                    <Tag v-if="data.shipments.length > 1" value="Conferidas juntas" icon="pi pi-link" severity="secondary" class="mt-1" />
                 </template>
             </Column>
             <Column header="Divergências">
                 <template #body="{ data }">
                     <ul class="m-0 p-0 list-none flex flex-col gap-1">
-                        <li v-for="divergence in data.divergences" :key="divergence.lineUuid" class="text-sm">
+                        <li v-for="divergence in data.divergences" :key="divergence.materialUuid" class="text-sm">
                             <span class="font-medium">{{ divergence.materialCode }}</span>
                             <span class="text-muted-color"> · {{ divergence.materialDescription }}</span>
                             <div>
                                 conferido <strong>{{ formatQty(divergence.countedQty) }}</strong> · separado <strong>{{ formatQty(divergence.pickedQty) }}</strong>
+                            </div>
+                            <!-- The count covers every shipment together; the picked quantity is known per shipment -->
+                            <div v-if="divergence.shipments.length > 1" class="text-xs text-muted-color">
+                                <span v-for="(shipment, index) in divergence.shipments" :key="shipment.uuid"> <template v-if="index">; </template>{{ shipmentLabel(shipment) }}: separado {{ formatQty(shipment.pickedQty) }} </span>
                             </div>
                         </li>
                     </ul>

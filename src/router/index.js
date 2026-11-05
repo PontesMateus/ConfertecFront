@@ -1,6 +1,7 @@
 import { USER_TYPE } from '@/constants/userType';
 import AppLayout from '@/layout/AppLayout.vue';
 import { AuthService } from '@/service/AuthService';
+import { PickingService } from '@/service/PickingService';
 import { setSessionExpiredHandler } from '@/service/http';
 import { session } from '@/service/session';
 import { createRouter, createWebHistory } from 'vue-router';
@@ -38,11 +39,26 @@ const router = createRouter({
                     props: true
                 },
                 {
-                    path: 'pickings/:pickingUuid',
+                    path: 'picking-batches/:batchUuid',
                     name: 'picking',
                     meta: { title: 'Separação', userTypes: [USER_TYPE.PICKER] },
                     component: () => import('@/views/pickings/PickingView.vue'),
                     props: true
+                },
+                {
+                    // Older links to a single picking open the batch it belongs to
+                    path: 'pickings/:pickingUuid',
+                    meta: { userTypes: [USER_TYPE.PICKER] },
+                    // Never shown: beforeEnter always redirects (a record with `redirect` would skip beforeEnter)
+                    component: () => import('@/views/pickings/PickingView.vue'),
+                    beforeEnter: async (to) => {
+                        try {
+                            const picking = await PickingService.get(to.params.pickingUuid);
+                            return { name: 'picking', params: { batchUuid: picking.batchUuid }, replace: true };
+                        } catch {
+                            return { name: 'home', replace: true };
+                        }
+                    }
                 },
                 {
                     path: 'shipments',

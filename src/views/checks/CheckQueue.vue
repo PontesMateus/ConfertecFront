@@ -11,6 +11,7 @@ const router = useRouter();
 const toast = useToast();
 const confirm = useConfirm();
 
+/** One entry per picking batch: its shipments are staged and counted together */
 const entries = ref([]);
 const loading = ref(true);
 const loadError = ref('');
@@ -22,7 +23,7 @@ const myUuid = computed(() => session.state.user?.uuid);
 const filteredEntries = computed(() => {
     const term = normalize(search.value.trim());
     if (!term) return entries.value;
-    return entries.value.filter((entry) => [label(entry), entry.shipment.customer, entry.shipment.venture, entry.shipment.vehicle, entry.pickingUserName].some((value) => value && normalize(value).includes(term)));
+    return entries.value.filter((entry) => [entry.pickingUserName, ...entry.shipments.flatMap((shipment) => [shipmentLabel(shipment), shipment.customer, shipment.venture, shipment.vehicle])].some((value) => value && normalize(value).includes(term)));
 });
 
 /** Case- and accent-insensitive comparison, so "construcao" finds "Construção". */
@@ -30,8 +31,12 @@ function normalize(value) {
     return value.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }
 
+function shipmentLabel(shipment) {
+    return `${shipment.record}-${shipment.recordReceipt}`;
+}
+
 function label(entry) {
-    return `${entry.shipment.record}-${entry.shipment.recordReceipt}`;
+    return entry.shipments.map(shipmentLabel).join(', ');
 }
 
 function isMine(entry) {
@@ -55,9 +60,11 @@ function openCheck(checkUuid) {
 }
 
 function confirmStart(entry) {
+    const items = `${entry.itemCount} ${entry.itemCount === 1 ? 'item' : 'itens'}`;
+    const what = entry.shipments.length > 1 ? `das remessas ${label(entry)}, separadas juntas (${items}). Os materiais das remessas são contados juntos` : `da remessa ${label(entry)} (${items})`;
     confirm.require({
         header: 'Iniciar conferência',
-        message: `Você será o responsável pela conferência da remessa ${label(entry)} (${entry.itemCount} ${entry.itemCount === 1 ? 'item' : 'itens'}). Conte cada item sem consultar a remessa. Deseja iniciar?`,
+        message: `Você será o responsável pela conferência ${what}. Conte cada item sem consultar a remessa. Deseja iniciar?`,
         icon: 'pi pi-check-square',
         rejectProps: { label: 'Cancelar', severity: 'secondary', text: true },
         acceptProps: { label: 'Iniciar conferência' },
@@ -66,9 +73,9 @@ function confirmStart(entry) {
 }
 
 async function start(entry) {
-    startingUuid.value = entry.pickingUuid;
+    startingUuid.value = entry.batchUuid;
     try {
-        const check = await CheckService.start(entry.pickingUuid);
+        const check = await CheckService.start(entry.batchUuid);
         openCheck(check.uuid);
     } catch (error) {
         toast.add({ severity: 'error', summary: 'Não foi possível iniciar', detail: error.message, life: 5000 });
@@ -87,7 +94,7 @@ onMounted(load);
         <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
             <div>
                 <h1 class="text-2xl font-semibold m-0">Remessas para conferir</h1>
-                <p class="text-muted-color m-0 mt-1">Separações concluídas aguardando conferência, da saída mais próxima para a mais distante.</p>
+                <p class="text-muted-color m-0 mt-1">Separações concluídas aguardando conferência, da saída mais próxima para a mais distante. Remessas separadas juntas são conferidas juntas.</p>
             </div>
             <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :loading="loading" @click="load" />
         </div>
@@ -99,7 +106,7 @@ onMounted(load);
             </div>
         </Message>
 
-        <DataTable :value="filteredEntries" :loading="loading" dataKey="pickingUuid" paginator :rows="20" :rowsPerPageOptions="[20, 50, 100]" stripedRows>
+        <DataTable :value="filteredEntries" :loading="loading" dataKey="batchUuid" paginator :rows="20" :rowsPerPageOptions="[20, 50, 100]" stripedRows>
             <template #header>
                 <div class="flex justify-end">
                     <IconField class="w-full sm:w-80">
@@ -115,24 +122,35 @@ onMounted(load);
 
             <Column header="Remessa" class="whitespace-nowrap">
                 <template #body="{ data }">
-                    <span class="font-medium">{{ data.shipment.record }}</span>
-                    <span class="text-muted-color">-{{ data.shipment.recordReceipt }}</span>
-                    <Tag v-if="data.recount" value="Reconferência" icon="pi pi-replay" severity="warn" class="ml-2" v-tooltip.top="'A conferência anterior encontrou divergências'" />
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">
+                        <span class="font-medium">{{ shipment.record }}</span>
+                        <span class="text-muted-color">-{{ shipment.recordReceipt }}</span>
+                    </div>
+                    <Tag v-if="data.shipments.length > 1" :value="`${data.shipments.length} remessas juntas`" icon="pi pi-link" severity="secondary" class="mt-1" />
+                    <Tag v-if="data.recount" value="Reconferência" icon="pi pi-replay" severity="warn" class="mt-1" :class="{ 'ml-1': data.shipments.length > 1 }" v-tooltip.top="'A conferência anterior encontrou divergências'" />
                 </template>
             </Column>
             <Column header="Saída" class="whitespace-nowrap">
-                <template #body="{ data }">{{ formatDateTime(data.shipment.shippingAt) }}</template>
+                <template #body="{ data }">
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">{{ formatDateTime(shipment.shippingAt) }}</div>
+                </template>
             </Column>
             <Column header="Cliente">
-                <template #body="{ data }">{{ data.shipment.customer ?? '—' }}</template>
+                <template #body="{ data }">
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">{{ shipment.customer ?? '—' }}</div>
+                </template>
             </Column>
             <Column header="Obra">
-                <template #body="{ data }">{{ data.shipment.venture ?? '—' }}</template>
+                <template #body="{ data }">
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">{{ shipment.venture ?? '—' }}</div>
+                </template>
             </Column>
             <Column header="Veículo" class="whitespace-nowrap">
                 <template #body="{ data }">
-                    <span v-if="data.shipment.vehicle">{{ data.shipment.vehicle }}</span>
-                    <Tag v-else value="Não informado" icon="pi pi-exclamation-triangle" severity="warn" />
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">
+                        <span v-if="shipment.vehicle">{{ shipment.vehicle }}</span>
+                        <Tag v-else value="Não informado" icon="pi pi-exclamation-triangle" severity="warn" />
+                    </div>
                 </template>
             </Column>
             <Column header="Separação" class="whitespace-nowrap">
@@ -157,7 +175,7 @@ onMounted(load);
             <Column header="" class="w-0 whitespace-nowrap">
                 <template #body="{ data }">
                     <div class="flex justify-end">
-                        <Button v-if="!data.check" label="Iniciar" icon="pi pi-play" size="small" :loading="startingUuid === data.pickingUuid" :disabled="!!startingUuid" @click="confirmStart(data)" />
+                        <Button v-if="!data.check" label="Iniciar" icon="pi pi-play" size="small" :loading="startingUuid === data.batchUuid" :disabled="!!startingUuid" @click="confirmStart(data)" />
                         <Button v-else-if="isMine(data)" label="Continuar" icon="pi pi-arrow-right" iconPos="right" size="small" severity="contrast" @click="openCheck(data.check.uuid)" />
                         <Tag v-else value="Em conferência" severity="secondary" v-tooltip.left="`Em conferência por ${data.check.userName}`" />
                     </div>

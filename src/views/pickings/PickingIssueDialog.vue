@@ -8,7 +8,9 @@ const DESCRIPTION_MAX_LENGTH = 1000;
 const props = defineProps({
     pickingUuid: { type: String, required: true },
     /** Picking item with the shortage; its remainingQty caps the quantity */
-    item: { type: Object, default: null }
+    item: { type: Object, default: null },
+    /** Shown when the screen mixes shipments, so the picker knows which one is short */
+    shipmentLabel: { type: String, default: null }
 });
 const emit = defineEmits(['reported']);
 const visible = defineModel('visible', { type: Boolean, default: false });
@@ -70,6 +72,9 @@ async function save() {
     <Dialog v-model:visible="visible" header="Informar falta" modal :closable="!saving" :style="{ width: '32rem' }" :breakpoints="{ '575px': '95vw' }">
         <form v-if="item" id="picking-issue-form" class="flex flex-col gap-4" @submit.prevent="save">
             <div class="p-3 rounded-border bg-surface-100 dark:bg-surface-800">
+                <div v-if="shipmentLabel" class="text-sm text-muted-color mb-1">
+                    Remessa <span class="font-medium text-color">{{ shipmentLabel }}</span>
+                </div>
                 <div class="font-medium">{{ item.materialCode }} · {{ item.materialDescription }}</div>
                 <div class="text-sm text-muted-color mt-1">
                     Remessa {{ qtyFormat.format(item.requiredQty) }} · separado {{ qtyFormat.format(item.pickedQty) }}

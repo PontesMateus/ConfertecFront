@@ -50,8 +50,22 @@ async function load() {
     }
 }
 
-function openPicking(pickingUuid) {
-    router.push({ name: 'picking', params: { pickingUuid } });
+/** Opens the picking's batch, with every shipment picked together with it */
+function openPicking(batchUuid) {
+    router.push({ name: 'picking', params: { batchUuid } });
+}
+
+/** How many other shipments of the list are picked on the same screen */
+const batchSizes = computed(() => {
+    const sizes = new Map();
+    for (const shipment of shipments.value) {
+        if (shipment.picking) sizes.set(shipment.picking.batchUuid, (sizes.get(shipment.picking.batchUuid) ?? 0) + 1);
+    }
+    return sizes;
+});
+
+function otherInBatch(shipment) {
+    return (batchSizes.value.get(shipment.picking.batchUuid) ?? 1) - 1;
 }
 
 function confirmStart(shipment) {
@@ -69,7 +83,7 @@ async function start(shipment) {
     startingUuid.value = shipment.uuid;
     try {
         const picking = await PickingService.start(shipment.uuid);
-        openPicking(picking.uuid);
+        openPicking(picking.batchUuid);
     } catch (error) {
         toast.add({ severity: 'error', summary: 'Não foi possível iniciar', detail: error.message, life: 5000 });
         // Someone else may have started it meanwhile
@@ -143,6 +157,7 @@ onMounted(load);
                         </span>
                         <ProgressBar :value="data.itemCount ? Math.round((data.picking.doneItemCount / data.itemCount) * 100) : 0" :showValue="false" class="h-1.5" />
                         <span class="text-xs text-muted-color">{{ data.picking.doneItemCount }} de {{ data.itemCount }} itens completos</span>
+                        <span v-if="otherInBatch(data)" class="text-xs text-muted-color"> <i class="pi pi-link text-xs mr-1"></i>Separada junto com {{ otherInBatch(data) === 1 ? 'outra remessa' : `outras ${otherInBatch(data)} remessas` }} </span>
                         <Tag
                             v-if="data.picking.openIssueCount"
                             :value="data.picking.openIssueCount === 1 ? '1 falta pendente' : `${data.picking.openIssueCount} faltas pendentes`"
@@ -158,8 +173,8 @@ onMounted(load);
                 <template #body="{ data }">
                     <div class="flex justify-end">
                         <Button v-if="!data.picking" label="Iniciar" icon="pi pi-play" size="small" :loading="startingUuid === data.uuid" :disabled="!!startingUuid" @click="confirmStart(data)" />
-                        <Button v-else-if="isMine(data)" label="Continuar" icon="pi pi-arrow-right" iconPos="right" size="small" severity="contrast" @click="openPicking(data.picking.uuid)" />
-                        <Button v-else label="Ver" icon="pi pi-eye" size="small" severity="secondary" outlined v-tooltip.left="`Em separação por ${data.picking.userName}`" @click="openPicking(data.picking.uuid)" />
+                        <Button v-else-if="isMine(data)" label="Continuar" icon="pi pi-arrow-right" iconPos="right" size="small" severity="contrast" @click="openPicking(data.picking.batchUuid)" />
+                        <Button v-else label="Ver" icon="pi pi-eye" size="small" severity="secondary" outlined v-tooltip.left="`Em separação por ${data.picking.userName}`" @click="openPicking(data.picking.batchUuid)" />
                     </div>
                 </template>
             </Column>

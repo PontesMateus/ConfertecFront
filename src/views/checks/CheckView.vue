@@ -38,8 +38,9 @@ const finishForm = reactive({ customerInspection: false, companyPersonQty: 1, cu
 const timers = new Map();
 const qtyFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 });
 
-const shipment = computed(() => check.value?.shipment);
-const label = computed(() => shipment.value && `${shipment.value.record}-${shipment.value.recordReceipt}`);
+const shipments = computed(() => check.value?.shipments ?? []);
+const multiple = computed(() => shipments.value.length > 1);
+const label = computed(() => shipments.value.map((shipment) => `${shipment.record}-${shipment.recordReceipt}`).join(', '));
 const editable = computed(() => check.value?.status === 'open' && check.value.userUuid === session.state.user?.uuid);
 const countedCount = computed(() => items.value.filter((item) => item.countedQty !== null).length);
 const progress = computed(() => (items.value.length ? Math.round((countedCount.value / items.value.length) * 100) : 0));
@@ -68,7 +69,7 @@ async function load() {
 function onQtyInput(item, value) {
     item.draftQty = value;
     item.errorMessage = '';
-    clearTimeout(timers.get(item.lineUuid));
+    clearTimeout(timers.get(item.materialUuid));
     // Clearing the field leaves the last saved count; there is no "not counted" to go back to
     if (value === null) {
         item.saveState = 'saved';
@@ -76,17 +77,17 @@ function onQtyInput(item, value) {
     }
     item.saveState = 'pending';
     timers.set(
-        item.lineUuid,
+        item.materialUuid,
         setTimeout(() => save(item), SAVE_DELAY_MS)
     );
 }
 
 async function save(item) {
-    timers.delete(item.lineUuid);
+    timers.delete(item.materialUuid);
     const seq = ++item.seq;
     item.saveState = 'saving';
     try {
-        const saved = await CheckService.setItemQty(props.checkUuid, item.lineUuid, item.draftQty);
+        const saved = await CheckService.setItemQty(props.checkUuid, item.materialUuid, item.draftQty);
         if (seq !== item.seq) return;
         Object.assign(item, { countedQty: saved.countedQty, saveState: 'saved' });
     } catch (error) {
@@ -96,9 +97,9 @@ async function save(item) {
 }
 
 function flushPendingSaves() {
-    for (const [lineUuid, timer] of timers) {
+    for (const [materialUuid, timer] of timers) {
         clearTimeout(timer);
-        const item = items.value.find((candidate) => candidate.lineUuid === lineUuid);
+        const item = items.value.find((candidate) => candidate.materialUuid === materialUuid);
         if (item) save(item);
     }
 }
@@ -124,9 +125,9 @@ async function finish() {
         );
         finishVisible.value = false;
         if (check.value.result.approved) {
-            toast.add({ severity: 'success', summary: 'Conferência aprovada', detail: `Remessa ${label.value}`, life: 4000 });
+            toast.add({ severity: 'success', summary: 'Conferência aprovada', detail: multiple.value ? `Remessas ${label.value}` : `Remessa ${label.value}`, life: 4000 });
         } else {
-            toast.add({ severity: 'warn', summary: 'Conferência reprovada', detail: `Remessa ${label.value}: o administrador foi avisado`, life: 6000 });
+            toast.add({ severity: 'warn', summary: 'Conferência reprovada', detail: `${multiple.value ? 'Remessas' : 'Remessa'} ${label.value}: o administrador foi avisado`, life: 6000 });
         }
     } catch (error) {
         finishError.value = error.message;
@@ -174,27 +175,32 @@ onBeforeUnmount(flushPendingSaves);
             </div>
 
             <template v-else-if="check">
-                <dl class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-4 mt-6 mb-0">
-                    <div>
-                        <dt class="text-sm text-muted-color">Saída</dt>
-                        <dd class="m-0 mt-1 font-medium">{{ formatDateTime(shipment.shippingAt) }}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-sm text-muted-color">Cliente</dt>
-                        <dd class="m-0 mt-1 font-medium">{{ shipment.customer || '—' }}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-sm text-muted-color">Obra</dt>
-                        <dd class="m-0 mt-1 font-medium">{{ shipment.venture || '—' }}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-sm text-muted-color">Veículo</dt>
-                        <dd class="m-0 mt-1 font-medium">
-                            <span v-if="shipment.vehicle">{{ shipment.vehicle }}</span>
-                            <Tag v-else value="Não informado" icon="pi pi-exclamation-triangle" severity="warn" />
-                        </dd>
-                    </div>
-                </dl>
+                <div class="grid grid-cols-1 gap-4 mt-6" :class="{ 'xl:grid-cols-2': multiple }">
+                    <section v-for="shipment in shipments" :key="shipment.uuid" :class="{ 'border border-surface rounded-border p-4': multiple }">
+                        <h2 v-if="multiple" class="text-lg font-semibold m-0 mb-3">Remessa {{ shipment.record }}-{{ shipment.recordReceipt }}</h2>
+                        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 m-0" :class="{ 'md:grid-cols-4': !multiple }">
+                            <div>
+                                <dt class="text-sm text-muted-color">Saída</dt>
+                                <dd class="m-0 mt-1 font-medium">{{ formatDateTime(shipment.shippingAt) }}</dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm text-muted-color">Cliente</dt>
+                                <dd class="m-0 mt-1 font-medium">{{ shipment.customer || '—' }}</dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm text-muted-color">Obra</dt>
+                                <dd class="m-0 mt-1 font-medium">{{ shipment.venture || '—' }}</dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm text-muted-color">Veículo</dt>
+                                <dd class="m-0 mt-1 font-medium">
+                                    <span v-if="shipment.vehicle">{{ shipment.vehicle }}</span>
+                                    <Tag v-else value="Não informado" icon="pi pi-exclamation-triangle" severity="warn" />
+                                </dd>
+                            </div>
+                        </dl>
+                    </section>
+                </div>
 
                 <template v-if="check.status === 'open'">
                     <div class="mt-6">
@@ -204,17 +210,25 @@ onBeforeUnmount(flushPendingSaves);
                         </div>
                         <ProgressBar :value="progress" :showValue="false" class="h-2" />
                     </div>
-                    <Message v-if="editable" severity="secondary" class="mt-4"> <i class="pi pi-eye-slash mr-2"></i>Conferência cega: conte cada item e informe a quantidade encontrada. A quantidade da remessa só é comparada ao finalizar. </Message>
+                    <Message v-if="editable && multiple" severity="secondary" class="mt-4">
+                        <i class="pi pi-eye-slash mr-2"></i>Conferência cega de {{ shipments.length }} remessas separadas juntas: conte cada material uma vez, somando o que encontrar de todas as remessas. As quantidades só são comparadas ao
+                        finalizar.
+                    </Message>
+                    <Message v-else-if="editable" severity="secondary" class="mt-4">
+                        <i class="pi pi-eye-slash mr-2"></i>Conferência cega: conte cada item e informe a quantidade encontrada. A quantidade da remessa só é comparada ao finalizar.
+                    </Message>
                     <Message v-else severity="info" class="mt-4">Esta conferência é de {{ check.userName }}; só o responsável pode alterá-la.</Message>
                 </template>
 
-                <Message v-else-if="check.result.approved" severity="success" class="mt-6"> <strong>Conferência aprovada.</strong> Todas as quantidades contadas conferem com a remessa. Finalizada em {{ formatDateTime(check.finishedAt) }}. </Message>
+                <Message v-else-if="check.result.approved" severity="success" class="mt-6">
+                    <strong>Conferência aprovada.</strong> Todas as quantidades contadas conferem com {{ multiple ? 'as remessas' : 'a remessa' }}. Finalizada em {{ formatDateTime(check.finishedAt) }}.
+                </Message>
                 <Message v-else severity="error" class="mt-6">
                     <div class="flex flex-col gap-1">
                         <strong>Conferência reprovada.</strong>
                         <span>
                             {{ check.result.divergentMaterialCodes.length === 1 ? 'Divergência em' : `Divergências em ${check.result.divergentMaterialCodes.length} itens:` }}
-                            {{ check.result.divergentMaterialCodes.join(', ') }}. O administrador foi avisado e a separação fica disponível para uma nova conferência.
+                            {{ check.result.divergentMaterialCodes.join(', ') }}. O administrador foi avisado e {{ multiple ? 'as remessas ficam disponíveis' : 'a separação fica disponível' }} para uma nova conferência.
                         </span>
                     </div>
                 </Message>
@@ -227,7 +241,7 @@ onBeforeUnmount(flushPendingSaves);
                 <SelectButton v-if="check.status === 'open'" v-model="itemFilter" :options="itemFilterOptions" optionLabel="label" optionValue="value" :allowEmpty="false" />
             </div>
 
-            <DataTable :value="visibleItems" dataKey="lineUuid" sortField="materialDescription" :sortOrder="1" stripedRows>
+            <DataTable :value="visibleItems" dataKey="materialUuid" sortField="materialDescription" :sortOrder="1" stripedRows>
                 <template #empty>
                     <div class="py-6 text-center text-muted-color">{{ itemFilter === 'pending' ? 'Todos os itens foram contados.' : 'Esta conferência não tem itens.' }}</div>
                 </template>

@@ -7,6 +7,7 @@ import { useConfirm } from 'primevue/useconfirm';
 import { useToast } from 'primevue/usetoast';
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import PickingBatchAddDialog from './PickingBatchAddDialog.vue';
 import PickingIssueDialog from './PickingIssueDialog.vue';
 
 // Waits for the picker to stop typing before saving a quantity
@@ -14,16 +15,20 @@ const SAVE_DELAY_MS = 600;
 // While a shortage waits for the administrator, checks for its resolution this often
 const REFRESH_INTERVAL_MS = 30_000;
 
+/** The screen shows a batch: one or more shipments picked together, each one with its own picking */
 const props = defineProps({
-    pickingUuid: { type: String, required: true }
+    batchUuid: { type: String, required: true }
 });
 
 const router = useRouter();
 const toast = useToast();
 const confirm = useConfirm();
 
-const picking = ref(null);
-/** Items with local edit state: draftQty (shown); pickedQty, missingQty, remainingQty, accounted (saved); saveState */
+const batch = ref(null);
+/**
+ * One entry per picking line, with local edit state: draftQty (shown); pickedQty, missingQty, remainingQty,
+ * accounted (saved); saveState. Also pickingUuid and shipmentLabel, since the batch mixes shipments.
+ */
 const items = ref([]);
 const loading = ref(true);
 const loadError = ref('');
@@ -36,39 +41,97 @@ const itemFilterOptions = [
 const finishVisible = ref(false);
 const finishing = ref(false);
 const finishError = ref('');
+const finishPicking = ref(null);
 const finishForm = reactive({ customerInspection: false, companyPersonQty: 1, customerPersonQty: 0 });
 
 const issueVisible = ref(false);
 const issueItem = ref(null);
+const addVisible = ref(false);
 const withdrawingUuid = ref(null);
 const returningUuid = ref(null);
+const removingUuid = ref(null);
 
 const timers = new Map();
 const qtyFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 });
 
-const shipment = computed(() => picking.value?.shipment);
-const label = computed(() => shipment.value && `${shipment.value.record}-${shipment.value.recordReceipt}`);
-const editable = computed(() => picking.value?.status === 'Em andamento' && picking.value.userUuid === session.state.user?.uuid);
-const doneCount = computed(() => items.value.filter((item) => item.done).length);
-const progress = computed(() => (items.value.length ? Math.round((doneCount.value / items.value.length) * 100) : 0));
-const pendingSaves = computed(() => items.value.some((item) => item.saveState === 'pending' || item.saveState === 'saving'));
-// An open issue waits for the administrator's resolution: until then the picking cannot be finished
-/** Picked materials a new revision took out of the shipment: they go back before finishing */
-const removedItems = computed(() => picking.value?.removedItems ?? []);
-const overCount = computed(() => items.value.filter((item) => item.overQty > 0).length);
-const canFinish = computed(() => editable.value && items.value.length > 0 && doneCount.value === items.value.length && !openIssues.value.length && !removedItems.value.length && !pendingSaves.value);
-const finishHint = computed(() => {
-    if (openIssues.value.length) return 'Há faltas aguardando resolução do administrador';
-    if (removedItems.value.length || overCount.value) return 'Devolva os materiais em excesso para concluir';
-    return 'Separe todos os itens por completo para concluir';
-});
-// "Accounted": nothing left for the picker to do (picked in full, or the rest reported missing)
-const visibleItems = computed(() => (itemFilter.value === 'pending' ? items.value.filter((item) => !item.accounted || item.overQty > 0 || item.saveState !== 'saved') : items.value));
-const openIssues = computed(() => picking.value?.issues.filter((issue) => issue.open) ?? []);
-const itemsWithShortage = computed(() => items.value.filter((item) => item.missingQty > 0).length);
+const myUuid = computed(() => session.state.user?.uuid);
+const pickings = computed(() => batch.value?.pickings ?? []);
+const multiple = computed(() => pickings.value.length > 1);
+const batchMine = computed(() => batch.value?.userUuid === myUuid.value);
+const title = computed(() => pickings.value.map((picking) => shipmentLabel(picking.shipment)).join(', '));
+const pendingSaves = computed(() => items.value.some(isSaving));
+const anyInProgress = computed(() => pickings.value.some((picking) => picking.status === 'Em andamento'));
+const editablePickingUuids = computed(() => new Set(pickings.value.filter(isEditable).map((picking) => picking.uuid)));
+const openIssues = computed(() => pickings.value.flatMap((picking) => picking.issues.filter((issue) => issue.open).map((issue) => ({ ...issue, pickingUuid: picking.uuid }))));
 
-function toLocalItem(item) {
-    return { ...item, draftQty: item.pickedQty, saveState: 'saved', errorMessage: '', seq: 0 };
+function shipmentLabel(shipment) {
+    return `${shipment.record}-${shipment.recordReceipt}`;
+}
+
+function isEditable(picking) {
+    return picking.status === 'Em andamento' && picking.userUuid === myUuid.value;
+}
+
+function entryEditable(entry) {
+    return editablePickingUuids.value.has(entry.pickingUuid);
+}
+
+function isSaving(entry) {
+    return entry.saveState === 'pending' || entry.saveState === 'saving';
+}
+
+// "Accounted": nothing left for the picker to do (picked in full, or the rest reported missing)
+function isPending(entry) {
+    return !entry.accounted || entry.overQty > 0 || entry.saveState !== 'saved';
+}
+
+/** Lines grouped by material: a material on several shipments has one counter per shipment */
+const materials = computed(() => {
+    const byCode = new Map();
+    for (const entry of items.value) {
+        if (!byCode.has(entry.materialCode)) byCode.set(entry.materialCode, { materialCode: entry.materialCode, materialDescription: entry.materialDescription, entries: [] });
+        byCode.get(entry.materialCode).entries.push(entry);
+    }
+    return [...byCode.values()].map((material) => ({
+        ...material,
+        requiredQty: Math.round(material.entries.reduce((sum, entry) => sum + entry.requiredQty, 0) * 1000) / 1000,
+        replacedMaterialCodes: [...new Set(material.entries.map((entry) => entry.replacedMaterialCode).filter(Boolean))],
+        pending: material.entries.some(isPending)
+    }));
+});
+const visibleMaterials = computed(() => (itemFilter.value === 'pending' ? materials.value.filter((material) => material.pending) : materials.value));
+
+/** Progress and finish state of each picking, by uuid */
+const summaries = computed(() => {
+    const result = new Map();
+    for (const picking of pickings.value) {
+        const entries = items.value.filter((entry) => entry.pickingUuid === picking.uuid);
+        const done = entries.filter((entry) => entry.done).length;
+        const openIssueCount = picking.issues.filter((issue) => issue.open).length;
+        const overCount = entries.filter((entry) => entry.overQty > 0).length;
+        const saving = entries.some(isSaving);
+        let finishHint = 'Separe todos os itens por completo para concluir';
+        if (openIssueCount) finishHint = 'Há faltas aguardando resolução do administrador';
+        else if (picking.removedItems.length || overCount) finishHint = 'Devolva os materiais em excesso para concluir';
+        result.set(picking.uuid, {
+            total: entries.length,
+            done,
+            progress: entries.length ? Math.round((done / entries.length) * 100) : 0,
+            withShortage: entries.filter((entry) => entry.missingQty > 0).length,
+            openIssueCount,
+            canFinish: isEditable(picking) && entries.length > 0 && done === entries.length && !openIssueCount && !picking.removedItems.length && !saving,
+            finishHint
+        });
+    }
+    return result;
+});
+
+/** Picked materials a new revision took out of a shipment: they go back before finishing */
+const removedItems = computed(() => pickings.value.flatMap((picking) => picking.removedItems.map((item) => ({ ...item, pickingUuid: picking.uuid, shipmentLabel: shipmentLabel(picking.shipment), editable: isEditable(picking) }))));
+const issues = computed(() => pickings.value.flatMap((picking) => picking.issues.map((issue) => ({ ...issue, pickingUuid: picking.uuid, shipmentLabel: shipmentLabel(picking.shipment), editable: isEditable(picking) }))));
+
+function toLocalItem(item, picking) {
+    return { ...item, pickingUuid: picking.uuid, shipmentLabel: shipmentLabel(picking.shipment), draftQty: item.pickedQty, saveState: 'saved', errorMessage: '', seq: 0 };
 }
 
 /** Max the picker can type: the shipment quantity minus what is reported missing */
@@ -76,18 +139,26 @@ function pickableQty(item) {
     return Math.round((item.requiredQty - item.missingQty) * 1000) / 1000;
 }
 
-/** Replaces the whole picking; only called with no save pending, so no typed quantity is lost */
+/** Replaces the whole batch; only called with no save pending, so no typed quantity is lost */
+function applyBatch(value) {
+    batch.value = value;
+    items.value = value.pickings.flatMap((picking) => picking.items.map((item) => toLocalItem(item, picking)));
+}
+
+/** Replaces one picking of the batch, keeping the local state of the other pickings' lines */
 function applyPicking(value) {
-    picking.value = value;
-    items.value = value.items.map(toLocalItem);
+    const index = batch.value.pickings.findIndex((picking) => picking.uuid === value.uuid);
+    if (index === -1) return;
+    batch.value.pickings.splice(index, 1, value);
+    items.value = batch.value.pickings.flatMap((picking) => (picking.uuid === value.uuid ? value.items.map((item) => toLocalItem(item, value)) : items.value.filter((entry) => entry.pickingUuid === picking.uuid)));
 }
 
 async function load() {
     loading.value = true;
     loadError.value = '';
     try {
-        applyPicking(await PickingService.get(props.pickingUuid));
-        document.title = `Separação ${label.value} | Confertec`;
+        applyBatch(await PickingService.getBatch(props.batchUuid));
+        document.title = `Separação ${title.value} | Confertec`;
     } catch (error) {
         loadError.value = error.message;
     } finally {
@@ -97,23 +168,23 @@ async function load() {
 
 /** Reloads when it is safe (no quantity being saved, no dialog open) and tells which shortages were resolved. */
 async function refresh() {
-    if (pendingSaves.value || issueVisible.value || finishVisible.value || loading.value) return;
+    if (pendingSaves.value || issueVisible.value || finishVisible.value || addVisible.value || loading.value) return;
     const wasOpen = new Set(openIssues.value.map((issue) => issue.uuid));
     try {
-        applyPicking(await PickingService.get(props.pickingUuid));
+        applyBatch(await PickingService.getBatch(props.batchUuid));
     } catch {
         return; // Keeps the current screen; the next tick or the button tries again
     }
-    for (const issue of picking.value.issues.filter((candidate) => wasOpen.has(candidate.uuid) && candidate.resolution)) {
+    for (const issue of issues.value.filter((candidate) => wasOpen.has(candidate.uuid) && candidate.resolution)) {
         const detail = issue.resolution.revisionUuid ? `${issue.materialCode}: substituído, confira os itens` : `${issue.materialCode}: aguardar reposição`;
-        toast.add({ severity: 'info', summary: 'Falta resolvida pelo administrador', detail, life: 8000 });
+        toast.add({ severity: 'info', summary: 'Falta resolvida pelo administrador', detail: multiple.value ? `Remessa ${issue.shipmentLabel} · ${detail}` : detail, life: 8000 });
     }
 }
 
 let refreshTimer = null;
 onMounted(() => {
     refreshTimer = setInterval(() => {
-        if (editable.value && openIssues.value.length) refresh();
+        if (openIssues.value.some((issue) => editablePickingUuids.value.has(issue.pickingUuid))) refresh();
     }, REFRESH_INTERVAL_MS);
 });
 
@@ -140,7 +211,7 @@ async function save(item) {
     const seq = ++item.seq;
     item.saveState = 'saving';
     try {
-        const saved = await PickingService.setItemQty(props.pickingUuid, item.lineUuid, item.draftQty);
+        const saved = await PickingService.setItemQty(item.pickingUuid, item.lineUuid, item.draftQty);
         if (seq !== item.seq) return;
         Object.assign(item, { pickedQty: saved.pickedQty, done: saved.done, missingQty: saved.missingQty, remainingQty: saved.remainingQty, accounted: saved.accounted, overQty: saved.overQty, saveState: 'saved' });
     } catch (error) {
@@ -161,8 +232,9 @@ function flushPendingSaves() {
 async function markReturned(item) {
     returningUuid.value = item.lineUuid;
     try {
-        await PickingService.setItemQty(props.pickingUuid, item.lineUuid, 0);
-        picking.value.removedItems = picking.value.removedItems.filter((removed) => removed.lineUuid !== item.lineUuid);
+        await PickingService.setItemQty(item.pickingUuid, item.lineUuid, 0);
+        const picking = batch.value.pickings.find((candidate) => candidate.uuid === item.pickingUuid);
+        picking.removedItems = picking.removedItems.filter((removed) => removed.lineUuid !== item.lineUuid);
         toast.add({ severity: 'success', summary: 'Material devolvido', detail: item.materialCode, life: 3000 });
     } catch (error) {
         toast.add({ severity: 'error', summary: 'Não foi possível registrar', detail: error.message, life: 5000 });
@@ -178,13 +250,13 @@ function openIssue(item) {
 
 function onIssueReported(value, item) {
     applyPicking(value);
-    toast.add({ severity: 'warn', summary: 'Falta informada', detail: item.materialCode, life: 3000 });
+    toast.add({ severity: 'warn', summary: 'Falta informada', detail: multiple.value ? `${item.materialCode} · remessa ${item.shipmentLabel}` : item.materialCode, life: 3000 });
 }
 
 function confirmWithdraw(issue) {
     confirm.require({
         header: 'Retirar falta',
-        message: `A falta de ${qtyFormat.format(issue.qty)} em ${issue.materialCode} será retirada e o item voltará a ficar pendente. Deseja continuar?`,
+        message: `A falta de ${qtyFormat.format(issue.qty)} em ${issue.materialCode}${multiple.value ? ` (remessa ${issue.shipmentLabel})` : ''} será retirada e o item voltará a ficar pendente. Deseja continuar?`,
         icon: 'pi pi-undo',
         rejectProps: { label: 'Cancelar', severity: 'secondary', text: true },
         acceptProps: { label: 'Retirar falta', severity: 'warn' },
@@ -195,7 +267,7 @@ function confirmWithdraw(issue) {
 async function withdraw(issue) {
     withdrawingUuid.value = issue.uuid;
     try {
-        applyPicking(await PickingService.withdrawIssue(props.pickingUuid, issue.uuid));
+        applyPicking(await PickingService.withdrawIssue(issue.pickingUuid, issue.uuid));
         toast.add({ severity: 'success', summary: 'Falta retirada', detail: issue.materialCode, life: 3000 });
     } catch (error) {
         toast.add({ severity: 'error', summary: 'Não foi possível retirar', detail: error.message, life: 5000 });
@@ -204,26 +276,62 @@ async function withdraw(issue) {
     }
 }
 
-function openFinish() {
-    finishForm.customerInspection = picking.value.customerInspection;
-    finishForm.companyPersonQty = picking.value.companyPersonQty;
-    finishForm.customerPersonQty = picking.value.customerPersonQty;
+function onShipmentsAdded(value, count) {
+    applyBatch(value);
+    document.title = `Separação ${title.value} | Confertec`;
+    if (count) toast.add({ severity: 'success', summary: count === 1 ? 'Remessa adicionada' : `${count} remessas adicionadas`, life: 3000 });
+}
+
+function confirmRemove(picking) {
+    const label = shipmentLabel(picking.shipment);
+    confirm.require({
+        header: 'Retirar remessa da separação',
+        message: `A remessa ${label} sai desta tela, mas a separação dela continua em andamento com o que já foi separado. Você pode retomá-la pela lista de remessas. Deseja continuar?`,
+        icon: 'pi pi-sign-out',
+        rejectProps: { label: 'Cancelar', severity: 'secondary', text: true },
+        acceptProps: { label: 'Retirar remessa', severity: 'warn' },
+        accept: () => removeFromBatch(picking, label)
+    });
+}
+
+async function removeFromBatch(picking, label) {
+    removingUuid.value = picking.uuid;
+    try {
+        applyBatch(await PickingService.removeFromBatch(props.batchUuid, picking.uuid));
+        document.title = `Separação ${title.value} | Confertec`;
+        toast.add({ severity: 'success', summary: 'Remessa retirada da separação', detail: label, life: 3000 });
+    } catch (error) {
+        toast.add({ severity: 'error', summary: 'Não foi possível retirar', detail: error.message, life: 5000 });
+    } finally {
+        removingUuid.value = null;
+    }
+}
+
+function openFinish(picking) {
+    finishPicking.value = picking;
+    finishForm.customerInspection = picking.customerInspection;
+    finishForm.companyPersonQty = picking.companyPersonQty;
+    finishForm.customerPersonQty = picking.customerPersonQty;
     finishError.value = '';
     finishVisible.value = true;
 }
 
 async function finish() {
+    const picking = finishPicking.value;
+    const label = shipmentLabel(picking.shipment);
     finishing.value = true;
     finishError.value = '';
     try {
-        await PickingService.finish(props.pickingUuid, {
+        const finished = await PickingService.finish(picking.uuid, {
             customerInspection: finishForm.customerInspection,
             companyPersonQty: finishForm.companyPersonQty ?? 1,
             customerPersonQty: finishForm.customerPersonQty ?? 0
         });
         finishVisible.value = false;
-        toast.add({ severity: 'success', summary: 'Separação concluída', detail: `Remessa ${label.value}`, life: 4000 });
-        router.push({ name: 'home' });
+        toast.add({ severity: 'success', summary: 'Separação concluída', detail: `Remessa ${label}`, life: 4000 });
+        applyPicking(finished);
+        // Nothing left to pick here: back to the list
+        if (!editablePickingUuids.value.size) router.push({ name: 'home' });
     } catch (error) {
         finishError.value = error.message;
     } finally {
@@ -231,7 +339,7 @@ async function finish() {
     }
 }
 
-watch(() => props.pickingUuid, load, { immediate: true });
+watch(() => props.batchUuid, load, { immediate: true });
 onBeforeUnmount(() => {
     clearInterval(refreshTimer);
     flushPendingSaves();
@@ -246,21 +354,30 @@ onBeforeUnmount(() => {
                     <Button icon="pi pi-arrow-left" severity="secondary" text rounded aria-label="Voltar" v-tooltip.bottom="'Voltar para a lista'" @click="router.push({ name: 'home' })" />
                     <div>
                         <h1 class="text-2xl font-semibold m-0">
-                            Separação <span v-if="label">{{ label }}</span>
+                            Separação <span v-if="title">{{ title }}</span>
                         </h1>
-                        <div v-if="picking" class="flex flex-wrap items-center gap-2 mt-1 text-muted-color">
-                            <Tag :value="picking.status" :severity="PICKING_STATUS_SEVERITY[picking.status]" />
-                            <span>Responsável: {{ picking.userName }}</span>
+                        <div v-if="batch" class="flex flex-wrap items-center gap-2 mt-1 text-muted-color">
+                            <span>Responsável: {{ batch.userName }}</span>
                             <span>·</span>
-                            <span>Iniciada em {{ formatDateTime(picking.createdAt) }}</span>
-                            <span>·</span>
-                            <span>Revisão {{ shipment.revisionNumber }}</span>
+                            <span>Iniciada em {{ formatDateTime(batch.createdAt) }}</span>
+                            <template v-if="multiple">
+                                <span>·</span>
+                                <span>{{ pickings.length }} remessas</span>
+                            </template>
                         </div>
                     </div>
                 </div>
-                <div v-if="picking" class="flex gap-2">
+                <div v-if="batch" class="flex gap-2">
                     <Button icon="pi pi-refresh" severity="secondary" outlined aria-label="Atualizar" v-tooltip.bottom="'Atualizar'" :disabled="pendingSaves" @click="refresh" />
-                    <Button v-if="editable" label="Concluir separação" icon="pi pi-check" :disabled="!canFinish" v-tooltip.bottom="canFinish ? null : finishHint" @click="openFinish" />
+                    <Button
+                        v-if="batchMine"
+                        label="Adicionar remessa"
+                        icon="pi pi-plus"
+                        severity="secondary"
+                        :disabled="pendingSaves"
+                        v-tooltip.bottom="pendingSaves ? 'Aguarde salvar as quantidades' : 'Separar outras remessas junto com esta'"
+                        @click="addVisible = true"
+                    />
                 </div>
             </div>
 
@@ -271,117 +388,160 @@ onBeforeUnmount(() => {
                 </div>
             </Message>
 
-            <div v-if="loading && !picking" class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
+            <div v-if="loading && !batch" class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
                 <Skeleton v-for="n in 4" :key="n" height="2.75rem" />
             </div>
 
-            <template v-else-if="picking">
-                <dl class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-4 mt-6 mb-0">
-                    <div>
-                        <dt class="text-sm text-muted-color">Saída</dt>
-                        <dd class="m-0 mt-1 font-medium">{{ formatDateTime(shipment.shippingAt) }}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-sm text-muted-color">Cliente</dt>
-                        <dd class="m-0 mt-1 font-medium">{{ shipment.customer || '—' }}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-sm text-muted-color">Obra</dt>
-                        <dd class="m-0 mt-1 font-medium">{{ shipment.venture || '—' }}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-sm text-muted-color">Veículo</dt>
-                        <dd class="m-0 mt-1 font-medium">
-                            <span v-if="shipment.vehicle">{{ shipment.vehicle }}</span>
-                            <Tag v-else value="Não informado" icon="pi pi-exclamation-triangle" severity="warn" />
-                        </dd>
-                    </div>
-                </dl>
-
-                <div class="mt-6">
-                    <div class="flex justify-between text-sm mb-2">
-                        <span class="font-medium">
-                            {{ doneCount }} de {{ items.length }} itens completos
-                            <span v-if="itemsWithShortage" class="text-muted-color font-normal">· {{ itemsWithShortage }} com falta pendente</span>
-                        </span>
-                        <span class="text-muted-color">{{ progress }}%</span>
-                    </div>
-                    <ProgressBar :value="progress" :showValue="false" class="h-2" />
-                </div>
-
-                <Message v-if="!editable && picking.status === 'Em andamento'" severity="info" class="mt-4">Esta separação é de {{ picking.userName }}. Você pode acompanhar, mas só o responsável pode alterá-la.</Message>
+            <template v-else-if="batch">
+                <Message v-if="!batchMine && anyInProgress" severity="info" class="mt-4">Esta separação é de {{ batch.userName }}. Você pode acompanhar, mas só o responsável pode alterá-la.</Message>
                 <Message v-if="openIssues.length" severity="warn" class="mt-4">
-                    {{ openIssues.length === 1 ? 'Há 1 falta aguardando' : `Há ${openIssues.length} faltas aguardando` }} resolução do administrador. Continue separando os outros itens; a separação só pode ser concluída depois que as faltas forem
-                    resolvidas.
+                    {{ openIssues.length === 1 ? 'Há 1 falta aguardando' : `Há ${openIssues.length} faltas aguardando` }} resolução do administrador. Continue separando os outros itens; a remessa com falta só pode ser concluída depois que a falta for
+                    resolvida.
                 </Message>
+
+                <div class="grid grid-cols-1 gap-4 mt-6" :class="{ 'xl:grid-cols-2': multiple }">
+                    <section v-for="picking in pickings" :key="picking.uuid" class="flex flex-col gap-4" :class="{ 'border border-surface rounded-border p-4': multiple }">
+                        <div class="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <h2 v-if="multiple" class="text-lg font-semibold m-0">Remessa {{ shipmentLabel(picking.shipment) }}</h2>
+                                    <Tag :value="picking.status" :severity="PICKING_STATUS_SEVERITY[picking.status]" />
+                                    <span class="text-sm text-muted-color">Revisão {{ picking.shipment.revisionNumber }}</span>
+                                </div>
+                            </div>
+                            <div class="flex gap-2">
+                                <Button
+                                    v-if="multiple && isEditable(picking)"
+                                    icon="pi pi-sign-out"
+                                    severity="secondary"
+                                    text
+                                    rounded
+                                    :aria-label="`Retirar a remessa ${shipmentLabel(picking.shipment)} desta separação`"
+                                    v-tooltip.top="pendingSaves ? 'Aguarde salvar as quantidades' : 'Retirar remessa desta separação'"
+                                    :disabled="pendingSaves"
+                                    :loading="removingUuid === picking.uuid"
+                                    @click="confirmRemove(picking)"
+                                />
+                                <Button
+                                    v-if="isEditable(picking)"
+                                    :label="multiple ? 'Concluir remessa' : 'Concluir separação'"
+                                    icon="pi pi-check"
+                                    :size="multiple ? 'small' : undefined"
+                                    :disabled="!summaries.get(picking.uuid).canFinish"
+                                    v-tooltip.bottom="summaries.get(picking.uuid).canFinish ? null : summaries.get(picking.uuid).finishHint"
+                                    @click="openFinish(picking)"
+                                />
+                            </div>
+                        </div>
+
+                        <dl class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 m-0" :class="{ 'md:grid-cols-4': !multiple }">
+                            <div>
+                                <dt class="text-sm text-muted-color">Saída</dt>
+                                <dd class="m-0 mt-1 font-medium">{{ formatDateTime(picking.shipment.shippingAt) }}</dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm text-muted-color">Cliente</dt>
+                                <dd class="m-0 mt-1 font-medium">{{ picking.shipment.customer || '—' }}</dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm text-muted-color">Obra</dt>
+                                <dd class="m-0 mt-1 font-medium">{{ picking.shipment.venture || '—' }}</dd>
+                            </div>
+                            <div>
+                                <dt class="text-sm text-muted-color">Veículo</dt>
+                                <dd class="m-0 mt-1 font-medium">
+                                    <span v-if="picking.shipment.vehicle">{{ picking.shipment.vehicle }}</span>
+                                    <Tag v-else value="Não informado" icon="pi pi-exclamation-triangle" severity="warn" />
+                                </dd>
+                            </div>
+                        </dl>
+
+                        <div>
+                            <div class="flex justify-between text-sm mb-2">
+                                <span class="font-medium">
+                                    {{ summaries.get(picking.uuid).done }} de {{ summaries.get(picking.uuid).total }} itens completos
+                                    <span v-if="summaries.get(picking.uuid).withShortage" class="text-muted-color font-normal">· {{ summaries.get(picking.uuid).withShortage }} com falta pendente</span>
+                                </span>
+                                <span class="text-muted-color">{{ summaries.get(picking.uuid).progress }}%</span>
+                            </div>
+                            <ProgressBar :value="summaries.get(picking.uuid).progress" :showValue="false" class="h-2" />
+                        </div>
+                    </section>
+                </div>
             </template>
         </div>
 
-        <div v-if="picking" class="card mb-0">
+        <div v-if="batch" class="card mb-0">
             <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <h2 class="text-xl font-semibold m-0">Itens</h2>
                 <SelectButton v-model="itemFilter" :options="itemFilterOptions" optionLabel="label" optionValue="value" :allowEmpty="false" />
             </div>
 
-            <DataTable :value="visibleItems" dataKey="lineUuid" sortField="materialDescription" :sortOrder="1" stripedRows :rowClass="(item) => (item.accounted && item.saveState === 'saved' ? 'opacity-70' : '')">
+            <DataTable :value="visibleMaterials" dataKey="materialCode" sortField="materialDescription" :sortOrder="1" stripedRows :rowClass="(material) => (material.pending ? '' : 'opacity-70')">
                 <template #empty>
-                    <div class="py-6 text-center text-muted-color">{{ itemFilter === 'pending' ? 'Todos os itens foram separados ou têm a falta informada.' : 'Esta remessa não tem itens.' }}</div>
+                    <div class="py-6 text-center text-muted-color">{{ itemFilter === 'pending' ? 'Todos os itens foram separados ou têm a falta informada.' : 'Esta separação não tem itens.' }}</div>
                 </template>
                 <Column field="materialCode" header="Código" sortable class="whitespace-nowrap">
                     <template #body="{ data }">
                         <span class="font-medium">{{ data.materialCode }}</span>
-                        <Tag v-if="data.replacedMaterialCode" :value="`Substitui ${data.replacedMaterialCode}`" icon="pi pi-arrow-right-arrow-left" severity="info" class="ml-2" />
+                        <Tag v-for="code in data.replacedMaterialCodes" :key="code" :value="`Substitui ${code}`" icon="pi pi-arrow-right-arrow-left" severity="info" class="ml-2" />
                     </template>
                 </Column>
                 <Column field="materialDescription" header="Descrição" sortable />
-                <Column field="requiredQty" header="Remessa" class="text-right whitespace-nowrap">
+                <Column field="requiredQty" :header="multiple ? 'Total' : 'Remessa'" class="text-right whitespace-nowrap">
                     <template #body="{ data }">
                         <span class="font-medium">{{ qtyFormat.format(data.requiredQty) }}</span>
+                        <div v-if="data.entries.length > 1" class="text-xs text-muted-color">em {{ data.entries.length }} remessas</div>
                     </template>
                 </Column>
                 <Column header="Separado" class="whitespace-nowrap">
                     <template #body="{ data }">
-                        <div class="flex flex-col gap-1">
-                            <div class="flex items-center gap-2">
-                                <InputNumber
-                                    v-if="editable"
-                                    :modelValue="data.draftQty"
-                                    :min="0"
-                                    :max="Math.max(pickableQty(data), data.pickedQty)"
-                                    :maxFractionDigits="3"
-                                    locale="pt-BR"
-                                    showButtons
-                                    buttonLayout="horizontal"
-                                    :inputStyle="{ width: '5.5rem', textAlign: 'center' }"
-                                    :aria-label="`Quantidade separada de ${data.materialCode}`"
-                                    @update:modelValue="onQtyInput(data, $event)"
-                                >
-                                    <template #incrementicon><span class="pi pi-plus" /></template>
-                                    <template #decrementicon><span class="pi pi-minus" /></template>
-                                </InputNumber>
-                                <span v-else class="font-medium">{{ qtyFormat.format(data.pickedQty) }}</span>
+                        <div class="flex flex-col gap-3">
+                            <div v-for="entry in data.entries" :key="entry.lineUuid" class="flex flex-col gap-1">
+                                <div v-if="multiple" class="text-xs text-muted-color">
+                                    Remessa <span class="font-medium text-color">{{ entry.shipmentLabel }}</span> · {{ qtyFormat.format(entry.requiredQty) }}
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <InputNumber
+                                        v-if="entryEditable(entry)"
+                                        :modelValue="entry.draftQty"
+                                        :min="0"
+                                        :max="Math.max(pickableQty(entry), entry.pickedQty)"
+                                        :maxFractionDigits="3"
+                                        locale="pt-BR"
+                                        showButtons
+                                        buttonLayout="horizontal"
+                                        :inputStyle="{ width: '5.5rem', textAlign: 'center' }"
+                                        :aria-label="multiple ? `Quantidade separada de ${entry.materialCode} para a remessa ${entry.shipmentLabel}` : `Quantidade separada de ${entry.materialCode}`"
+                                        @update:modelValue="onQtyInput(entry, $event)"
+                                    >
+                                        <template #incrementicon><span class="pi pi-plus" /></template>
+                                        <template #decrementicon><span class="pi pi-minus" /></template>
+                                    </InputNumber>
+                                    <span v-else class="font-medium">{{ qtyFormat.format(entry.pickedQty) }}</span>
 
-                                <Button v-if="editable && data.draftQty < pickableQty(data)" label="Tudo" size="small" severity="secondary" outlined v-tooltip.top="'Separar todo o restante'" @click="fillItem(data)" />
-                                <Button
-                                    v-if="editable && data.remainingQty > 0"
-                                    icon="pi pi-exclamation-triangle"
-                                    size="small"
-                                    severity="warn"
-                                    text
-                                    rounded
-                                    :aria-label="`Informar falta de ${data.materialCode}`"
-                                    v-tooltip.top="pendingSaves ? 'Aguarde salvar as quantidades' : 'Informar falta'"
-                                    :disabled="pendingSaves"
-                                    @click="openIssue(data)"
-                                />
-                                <i v-if="data.saveState === 'saving' || data.saveState === 'pending'" class="pi pi-spin pi-spinner text-muted-color" aria-label="Salvando"></i>
-                                <i v-else-if="data.saveState === 'error'" class="pi pi-times-circle text-red-500" aria-label="Não salvo"></i>
-                                <i v-else-if="data.done" class="pi pi-check-circle text-green-600 dark:text-green-400" aria-label="Completo"></i>
-                                <i v-else-if="data.accounted" class="pi pi-check-circle text-orange-500" aria-label="Resolvido com falta"></i>
+                                    <Button v-if="entryEditable(entry) && entry.draftQty < pickableQty(entry)" label="Tudo" size="small" severity="secondary" outlined v-tooltip.top="'Separar todo o restante'" @click="fillItem(entry)" />
+                                    <Button
+                                        v-if="entryEditable(entry) && entry.remainingQty > 0"
+                                        icon="pi pi-exclamation-triangle"
+                                        size="small"
+                                        severity="warn"
+                                        text
+                                        rounded
+                                        :aria-label="`Informar falta de ${entry.materialCode}`"
+                                        v-tooltip.top="pendingSaves ? 'Aguarde salvar as quantidades' : 'Informar falta'"
+                                        :disabled="pendingSaves"
+                                        @click="openIssue(entry)"
+                                    />
+                                    <i v-if="isSaving(entry)" class="pi pi-spin pi-spinner text-muted-color" aria-label="Salvando"></i>
+                                    <i v-else-if="entry.saveState === 'error'" class="pi pi-times-circle text-red-500" aria-label="Não salvo"></i>
+                                    <i v-else-if="entry.done" class="pi pi-check-circle text-green-600 dark:text-green-400" aria-label="Completo"></i>
+                                    <i v-else-if="entry.accounted" class="pi pi-check-circle text-orange-500" aria-label="Resolvido com falta"></i>
+                                </div>
+                                <Tag v-if="entry.missingQty > 0" :value="`Falta: ${qtyFormat.format(entry.missingQty)}`" icon="pi pi-exclamation-triangle" severity="warn" class="self-start" />
+                                <Tag v-if="entry.overQty > 0" :value="`Devolver ${qtyFormat.format(entry.overQty)}: a remessa diminuiu`" icon="pi pi-reply" severity="danger" class="self-start" />
+                                <small v-if="entry.saveState === 'error'" class="text-red-500 whitespace-normal">{{ entry.errorMessage }}</small>
                             </div>
-                            <Tag v-if="data.missingQty > 0" :value="`Falta: ${qtyFormat.format(data.missingQty)}`" icon="pi pi-exclamation-triangle" severity="warn" class="self-start" />
-                            <Tag v-if="data.overQty > 0" :value="`Devolver ${qtyFormat.format(data.overQty)}: a remessa diminuiu`" icon="pi pi-reply" severity="danger" class="self-start" />
-                            <small v-if="data.saveState === 'error'" class="text-red-500 whitespace-normal">{{ data.errorMessage }}</small>
                         </div>
                     </template>
                 </Column>
@@ -392,6 +552,7 @@ onBeforeUnmount(() => {
             <h2 class="text-xl font-semibold m-0">Materiais para devolver</h2>
             <p class="text-muted-color mt-1 mb-4">Estes materiais já foram separados, mas saíram da remessa numa nova revisão. Devolva-os ao estoque e confirme.</p>
             <DataTable :value="removedItems" dataKey="lineUuid" size="small">
+                <Column v-if="multiple" field="shipmentLabel" header="Remessa" class="whitespace-nowrap" />
                 <Column field="materialCode" header="Código" class="whitespace-nowrap">
                     <template #body="{ data }">
                         <span class="font-medium">{{ data.materialCode }}</span>
@@ -403,17 +564,18 @@ onBeforeUnmount(() => {
                         <span class="font-medium">{{ qtyFormat.format(data.pickedQty) }}</span>
                     </template>
                 </Column>
-                <Column v-if="editable" header="" class="w-0 whitespace-nowrap">
+                <Column header="" class="w-0 whitespace-nowrap">
                     <template #body="{ data }">
-                        <Button label="Devolvido" icon="pi pi-reply" size="small" severity="danger" outlined :loading="returningUuid === data.lineUuid" @click="markReturned(data)" />
+                        <Button v-if="data.editable" label="Devolvido" icon="pi pi-reply" size="small" severity="danger" outlined :loading="returningUuid === data.lineUuid" @click="markReturned(data)" />
                     </template>
                 </Column>
             </DataTable>
         </div>
 
-        <div v-if="picking && picking.issues.length" class="card mb-0">
+        <div v-if="issues.length" class="card mb-0">
             <h2 class="text-xl font-semibold m-0 mb-4">Faltas informadas</h2>
-            <DataTable :value="picking.issues" dataKey="uuid" size="small">
+            <DataTable :value="issues" dataKey="uuid" size="small">
+                <Column v-if="multiple" field="shipmentLabel" header="Remessa" class="whitespace-nowrap" />
                 <Column field="materialCode" header="Código" class="whitespace-nowrap">
                     <template #body="{ data }">
                         <span class="font-medium">{{ data.materialCode }}</span>
@@ -439,10 +601,10 @@ onBeforeUnmount(() => {
                 <Column header="Informada" class="whitespace-nowrap">
                     <template #body="{ data }">{{ formatDateTime(data.createdAt) }}</template>
                 </Column>
-                <Column v-if="editable" header="" class="w-0 whitespace-nowrap">
+                <Column header="" class="w-0 whitespace-nowrap">
                     <template #body="{ data }">
                         <Button
-                            v-if="data.open"
+                            v-if="data.open && data.editable"
                             icon="pi pi-undo"
                             severity="secondary"
                             text
@@ -459,11 +621,15 @@ onBeforeUnmount(() => {
         </div>
     </div>
 
-    <PickingIssueDialog v-model:visible="issueVisible" :pickingUuid="pickingUuid" :item="issueItem" @reported="onIssueReported" />
+    <PickingIssueDialog v-model:visible="issueVisible" :pickingUuid="issueItem?.pickingUuid ?? ''" :item="issueItem" :shipmentLabel="multiple ? issueItem?.shipmentLabel : null" @reported="onIssueReported" />
+    <PickingBatchAddDialog v-model:visible="addVisible" :batch="batch" @added="onShipmentsAdded" />
 
-    <Dialog v-model:visible="finishVisible" header="Concluir separação" modal :closable="!finishing" :style="{ width: '30rem' }" :breakpoints="{ '575px': '95vw' }">
-        <form id="finish-form" class="flex flex-col gap-5" @submit.prevent="finish">
-            <p class="m-0 text-muted-color">Todos os {{ items.length }} itens da remessa {{ label }} foram separados. Informe como foi a separação.</p>
+    <Dialog v-model:visible="finishVisible" :header="multiple ? 'Concluir remessa' : 'Concluir separação'" modal :closable="!finishing" :style="{ width: '30rem' }" :breakpoints="{ '575px': '95vw' }">
+        <form v-if="finishPicking" id="finish-form" class="flex flex-col gap-5" @submit.prevent="finish">
+            <p class="m-0 text-muted-color">
+                Todos os {{ summaries.get(finishPicking.uuid)?.total }} itens da remessa {{ shipmentLabel(finishPicking.shipment) }} foram separados. Informe como foi a separação.
+                <template v-if="multiple">As remessas desta tela são conferidas juntas: a conferência só começa quando todas estiverem concluídas.</template>
+            </p>
 
             <div class="flex items-center justify-between gap-4">
                 <label for="finish-inspection" class="font-medium">Cliente acompanhou a separação</label>

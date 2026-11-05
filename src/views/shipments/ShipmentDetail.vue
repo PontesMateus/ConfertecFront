@@ -194,6 +194,15 @@ watch(() => props.shipmentUuid, load, { immediate: true });
                     <template #body="{ data }">
                         <div class="font-medium">{{ data.userName }}</div>
                         <div class="text-xs text-muted-color">Iniciada em {{ formatDateTime(data.createdAt) }}</div>
+                        <div v-if="data.shipments.length > 1" class="text-xs text-muted-color mt-1">
+                            <i class="pi pi-link text-xs mr-1"></i>Junto com
+                            {{
+                                data.shipments
+                                    .filter((other) => other.uuid !== shipmentUuid)
+                                    .map((other) => `${other.record}-${other.recordReceipt}`)
+                                    .join(', ')
+                            }}
+                        </div>
                     </template>
                 </Column>
                 <Column header="Situação" class="whitespace-nowrap">
@@ -208,12 +217,16 @@ watch(() => props.shipmentUuid, load, { immediate: true });
                         <span v-if="data.status === 'open'" class="text-muted-color">—</span>
                         <span v-else-if="!data.divergences.length" class="text-muted-color">Nenhuma</span>
                         <ul v-else class="m-0 p-0 list-none flex flex-col gap-1">
-                            <li v-for="divergence in data.divergences" :key="divergence.lineUuid" class="text-sm">
+                            <li v-for="divergence in data.divergences" :key="divergence.materialUuid" class="text-sm">
                                 <span class="font-medium">{{ divergence.materialCode }}</span>
                                 <span class="text-muted-color"> · {{ divergence.materialDescription }}</span>
                                 <div>
                                     conferido <strong>{{ divergence.countedQty === null ? '—' : qtyFormat.format(divergence.countedQty) }}</strong> · separado
                                     <strong>{{ qtyFormat.format(divergence.pickedQty) }}</strong>
+                                </div>
+                                <!-- Counted together with other shipments: the picked quantity is known per shipment -->
+                                <div v-if="divergence.shipments.length > 1" class="text-xs text-muted-color">
+                                    <span v-for="(other, index) in divergence.shipments" :key="other.uuid"> <template v-if="index">; </template>{{ other.record }}-{{ other.recordReceipt }}: separado {{ qtyFormat.format(other.pickedQty) }} </span>
                                 </div>
                             </li>
                         </ul>
