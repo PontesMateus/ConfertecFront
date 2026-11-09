@@ -18,9 +18,9 @@ export function setSessionExpiredHandler(handler) {
 }
 
 /** A Blob/File body is sent as is, with its own type; anything else as JSON. */
-async function send(method, path, body) {
+async function send(method, path, body, extraHeaders = {}) {
     const isFile = body instanceof Blob;
-    const headers = { Accept: 'application/json' };
+    const headers = { Accept: 'application/json', ...extraHeaders };
     if (body !== undefined) headers['Content-Type'] = isFile ? body.type || 'application/octet-stream' : 'application/json';
     if (session.state.accessToken) headers.Authorization = `Bearer ${session.state.accessToken}`;
 
@@ -58,6 +58,29 @@ function refreshTokens() {
     return refreshing;
 }
 
+/** Seconds left on a JWT, from its own `exp`; 0 when unreadable. */
+function secondsLeft(token) {
+    try {
+        const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+        return payload.exp - Date.now() / 1000;
+    } catch {
+        return 0;
+    }
+}
+
+/**
+ * Returns an access token valid for at least `minSeconds`, refreshing it first when needed; null when the session
+ * ended. For connections that can't refresh on a 401, like the WebSocket.
+ */
+export async function getFreshAccessToken(minSeconds = 30) {
+    if (!session.state.refreshToken) return null;
+    if (session.state.accessToken && secondsLeft(session.state.accessToken) > minSeconds) return session.state.accessToken;
+    if (await refreshTokens()) return session.state.accessToken;
+    session.clear();
+    onSessionExpired();
+    return null;
+}
+
 export async function request(method, path, body) {
     let { response, data } = await send(method, path, body);
 
@@ -76,6 +99,16 @@ export async function request(method, path, body) {
     if (!response.ok) {
         throw new ApiError(data?.message ?? 'Erro inesperado', response.status);
     }
+    return data;
+}
+
+/**
+ * For the public pages (no login, like the customer's check): no refresh on a 401 and no session handling.
+ * `headers`: extra request headers.
+ */
+export async function publicRequest(method, path, body, headers = {}) {
+    const { response, data } = await send(method, path, body, headers);
+    if (!response.ok) throw new ApiError(data?.message ?? 'Erro inesperado', response.status);
     return data;
 }
 

@@ -1,7 +1,10 @@
 import { http } from './http';
 
 export const ShipmentService = {
-    /** @param {{ shippingDateFrom?: string, shippingDateTo?: string }} filter inclusive 'YYYY-MM-DD' bounds */
+    /**
+     * @param {{ shippingDateFrom?: string, shippingDateTo?: string, unassigned?: boolean }} filter inclusive 'YYYY-MM-DD' bounds;
+     *   `unassigned`: only shipments not in a batch yet
+     */
     list: (filter = {}) => {
         const query = new URLSearchParams(Object.entries(filter).filter(([, value]) => value)).toString();
         return http.get(query ? `/shipments?${query}` : '/shipments');

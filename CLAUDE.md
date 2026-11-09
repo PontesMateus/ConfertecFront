@@ -1,6 +1,6 @@
 # ConfertecFront
 
-Web app for pickers, checkers and administrators. Vue 3 (`<script setup>`, JavaScript), PrimeVue 4 (Aura with the Temec preset), Tailwind CSS 4, built from the Sakai template.
+Web app for Conferentes (who pick and check what is assigned to them), Encarregados (who assign) and administrators. Vue 3 (`<script setup>`, JavaScript), PrimeVue 4 (Aura with the Temec preset), Tailwind CSS 4, built from the Sakai template.
 
 ## Commands
 
@@ -19,6 +19,8 @@ npm run lint      # ESLint + Prettier (--fix); run it on the files you changed
 - `src/utils/date.js`: `formatDateTime` and the API's `YYYY-MM-DD` conversions.
 
 ## Conventions
+
+- `vite.config.mjs` has `optimizeDeps.noDiscovery: true`: a new CommonJS package (like `qrcode`) must go in `optimizeDeps.include`, or the dev server can't load the pages importing it (the build still passes). Restart `npm run dev` after changing it.
 
 - **All visible text in pt-BR**, concise. PrimeVue's own texts come from `primelocale/pt-BR.json`.
 - Use PrimeVue components and Tailwind utilities; follow the existing page pattern: a `card` header with title and actions, a `Message` with "Tentar novamente" on load errors, `Skeleton` while loading, a `DataTable` with an `#empty` slot.

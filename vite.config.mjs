@@ -12,7 +12,10 @@ export default defineConfig(({ mode }) => {
 
     return {
         optimizeDeps: {
-            noDiscovery: true
+            noDiscovery: true,
+            // With noDiscovery, CommonJS packages must be listed to be converted for the dev server
+            // (the build converts them anyway): qrcode draws the QR Code of the customer check
+            include: ['qrcode']
         },
         plugins: [
             vue(),
@@ -28,9 +31,10 @@ export default defineConfig(({ mode }) => {
         },
         server: {
             port: 5173,
-            // Same-origin in development, so the API needs no CORS setup
+            // Same-origin in development, so the API needs no CORS setup; ws: true also forwards the
+            // WebSocket upgrade of /api/ws
             proxy: {
-                '/api': env.VITE_API_PROXY_TARGET || 'http://localhost:3000'
+                '/api': { target: env.VITE_API_PROXY_TARGET || 'http://localhost:3000', ws: true }
             }
         },
         css: {

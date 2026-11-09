@@ -1,18 +1,20 @@
 <script setup>
 import { PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
 import { PickingService } from '@/service/PickingService';
+import { realtime } from '@/service/realtime';
 import { session } from '@/service/session';
 import { formatDateTime } from '@/utils/date';
 import { useConfirm } from 'primevue/useconfirm';
 import { useToast } from 'primevue/usetoast';
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import PickingBatchAddDialog from './PickingBatchAddDialog.vue';
+import CustomerCheckQrDialog from '@/views/customer-check/CustomerCheckQrDialog.vue';
 import PickingIssueDialog from './PickingIssueDialog.vue';
 
 // Waits for the picker to stop typing before saving a quantity
 const SAVE_DELAY_MS = 600;
 // While a shortage waits for the administrator, checks for its resolution this often
+/** Polling only while the real-time connection is down */
 const REFRESH_INTERVAL_MS = 30_000;
 
 /** The screen shows a batch: one or more shipments picked together, each one with its own picking */
@@ -42,14 +44,30 @@ const finishVisible = ref(false);
 const finishing = ref(false);
 const finishError = ref('');
 const finishPicking = ref(null);
-const finishForm = reactive({ customerInspection: false, companyPersonQty: 1, customerPersonQty: 0 });
+const finishForm = reactive({ customerInspection: false, customerInspectorName: '', companyPersonQty: 1, customerCheck: false });
+const finishSubmitted = ref(false);
+const inspectorName = computed(() => finishForm.customerInspectorName.trim());
+/** Link of the customer check released when finishing the batch's last picking, shown as a QR Code */
+const customerCheckLink = ref(null);
+const qrVisible = ref(false);
+
+/**
+ * The customer's inspector can check instead of the checker when this is the batch's last picking left and every
+ * shipment of the batch is of the same customer (the API checks it too)
+ */
+const canOfferCustomerCheck = computed(() => {
+    const current = finishPicking.value;
+    if (!current) return false;
+    const others = pickings.value.filter((picking) => picking.uuid !== current.uuid);
+    const customers = new Set(pickings.value.map((picking) => picking.shipment.customer?.trim() || null));
+    return others.every((picking) => picking.status === 'Concluída') && customers.size === 1 && !customers.has(null);
+});
 
 const issueVisible = ref(false);
 const issueItem = ref(null);
-const addVisible = ref(false);
+const starting = ref(false);
 const withdrawingUuid = ref(null);
 const returningUuid = ref(null);
-const removingUuid = ref(null);
 
 const timers = new Map();
 const qtyFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 });
@@ -61,6 +79,8 @@ const batchMine = computed(() => batch.value?.userUuid === myUuid.value);
 const title = computed(() => pickings.value.map((picking) => shipmentLabel(picking.shipment)).join(', '));
 const pendingSaves = computed(() => items.value.some(isSaving));
 const anyInProgress = computed(() => pickings.value.some((picking) => picking.status === 'Em andamento'));
+/** Assigned by the Encarregado and not started yet: the picker starts the whole batch at once */
+const anyPending = computed(() => pickings.value.some((picking) => picking.status === 'Pendente'));
 const editablePickingUuids = computed(() => new Set(pickings.value.filter(isEditable).map((picking) => picking.uuid)));
 const openIssues = computed(() => pickings.value.flatMap((picking) => picking.issues.filter((issue) => issue.open).map((issue) => ({ ...issue, pickingUuid: picking.uuid }))));
 
@@ -166,14 +186,30 @@ async function load() {
     }
 }
 
+const refreshBlocked = computed(() => pendingSaves.value || issueVisible.value || finishVisible.value || qrVisible.value || loading.value);
+/** A refresh was asked while blocked; it runs as soon as the save ends or the dialog closes */
+let refreshPending = false;
+watch(refreshBlocked, (blocked) => {
+    if (!blocked && refreshPending) refresh();
+});
+
 /** Reloads when it is safe (no quantity being saved, no dialog open) and tells which shortages were resolved. */
 async function refresh() {
-    if (pendingSaves.value || issueVisible.value || finishVisible.value || addVisible.value || loading.value) return;
+    if (refreshBlocked.value) {
+        refreshPending = true;
+        return;
+    }
+    refreshPending = false;
     const wasOpen = new Set(openIssues.value.map((issue) => issue.uuid));
     try {
         applyBatch(await PickingService.getBatch(props.batchUuid));
-    } catch {
-        return; // Keeps the current screen; the next tick or the button tries again
+    } catch (error) {
+        // The Encarregado gave the batch to someone else, or took this shipment out of it
+        if (error.status === 400) {
+            toast.add({ severity: 'warn', summary: 'Separação reatribuída', detail: error.message, life: 8000 });
+            router.push({ name: 'home' });
+        }
+        return; // Otherwise keeps the current screen; the next tick or the button tries again
     }
     for (const issue of issues.value.filter((candidate) => wasOpen.has(candidate.uuid) && candidate.resolution)) {
         const detail = issue.resolution.revisionUuid ? `${issue.materialCode}: substituído, confira os itens` : `${issue.materialCode}: aguardar reposição`;
@@ -182,9 +218,19 @@ async function refresh() {
 }
 
 let refreshTimer = null;
+let unsubscribe = null;
+let unsubscribeBatch = null;
 onMounted(() => {
+    // An administrator resolved an issue of a picking on this screen; after a reconnection, events may have been missed
+    unsubscribe = realtime.subscribe('picking.changed', (message) => {
+        if (message.reconnected || pickings.value.some((picking) => picking.uuid === message.pickingUuid)) refresh();
+    });
+    // The Encarregado changed the batch: its shipments, its picker or its checker
+    unsubscribeBatch = realtime.subscribe('pickingBatch.changed', (message) => {
+        if (message.reconnected || message.batchUuid === props.batchUuid) refresh();
+    });
     refreshTimer = setInterval(() => {
-        if (openIssues.value.some((issue) => editablePickingUuids.value.has(issue.pickingUuid))) refresh();
+        if (!realtime.connected.value && openIssues.value.some((issue) => editablePickingUuids.value.has(issue.pickingUuid))) refresh();
     }, REFRESH_INTERVAL_MS);
 });
 
@@ -276,42 +322,36 @@ async function withdraw(issue) {
     }
 }
 
-function onShipmentsAdded(value, count) {
-    applyBatch(value);
-    document.title = `Separação ${title.value} | Confertec`;
-    if (count) toast.add({ severity: 'success', summary: count === 1 ? 'Remessa adicionada' : `${count} remessas adicionadas`, life: 3000 });
-}
-
-function confirmRemove(picking) {
-    const label = shipmentLabel(picking.shipment);
+function confirmStart() {
     confirm.require({
-        header: 'Retirar remessa da separação',
-        message: `A remessa ${label} sai desta tela, mas a separação dela continua em andamento com o que já foi separado. Você pode retomá-la pela lista de remessas. Deseja continuar?`,
-        icon: 'pi pi-sign-out',
+        header: 'Iniciar separação',
+        message: multiple.value ? `Você vai iniciar a separação das ${pickings.value.length} remessas deste grupo. Deseja continuar?` : 'Você vai iniciar a separação desta remessa. Deseja continuar?',
+        icon: 'pi pi-play',
         rejectProps: { label: 'Cancelar', severity: 'secondary', text: true },
-        acceptProps: { label: 'Retirar remessa', severity: 'warn' },
-        accept: () => removeFromBatch(picking, label)
+        acceptProps: { label: 'Iniciar separação' },
+        accept: start
     });
 }
 
-async function removeFromBatch(picking, label) {
-    removingUuid.value = picking.uuid;
+async function start() {
+    starting.value = true;
     try {
-        applyBatch(await PickingService.removeFromBatch(props.batchUuid, picking.uuid));
-        document.title = `Separação ${title.value} | Confertec`;
-        toast.add({ severity: 'success', summary: 'Remessa retirada da separação', detail: label, life: 3000 });
+        applyBatch(await PickingService.startBatch(props.batchUuid));
+        toast.add({ severity: 'success', summary: 'Separação iniciada', life: 3000 });
     } catch (error) {
-        toast.add({ severity: 'error', summary: 'Não foi possível retirar', detail: error.message, life: 5000 });
+        toast.add({ severity: 'error', summary: 'Não foi possível iniciar', detail: error.message, life: 5000 });
     } finally {
-        removingUuid.value = null;
+        starting.value = false;
     }
 }
 
 function openFinish(picking) {
     finishPicking.value = picking;
     finishForm.customerInspection = picking.customerInspection;
+    finishForm.customerInspectorName = picking.customerInspectorName ?? '';
     finishForm.companyPersonQty = picking.companyPersonQty;
-    finishForm.customerPersonQty = picking.customerPersonQty;
+    finishForm.customerCheck = false;
+    finishSubmitted.value = false;
     finishError.value = '';
     finishVisible.value = true;
 }
@@ -319,17 +359,28 @@ function openFinish(picking) {
 async function finish() {
     const picking = finishPicking.value;
     const label = shipmentLabel(picking.shipment);
+    finishSubmitted.value = true;
+    if (finishForm.customerInspection && !inspectorName.value) return;
     finishing.value = true;
     finishError.value = '';
     try {
         const finished = await PickingService.finish(picking.uuid, {
             customerInspection: finishForm.customerInspection,
+            // Only sent with an inspection: the API stores no name without one
+            customerInspectorName: finishForm.customerInspection ? inspectorName.value : undefined,
             companyPersonQty: finishForm.companyPersonQty ?? 1,
-            customerPersonQty: finishForm.customerPersonQty ?? 0
+            customerCheck: finishForm.customerInspection && canOfferCustomerCheck.value && finishForm.customerCheck
         });
+        const { customerCheckLink: link, ...value } = finished;
         finishVisible.value = false;
         toast.add({ severity: 'success', summary: 'Separação concluída', detail: `Remessa ${label}`, life: 4000 });
-        applyPicking(finished);
+        applyPicking(value);
+        if (link) {
+            // The list comes after the QR Code is read: see onQrClosed
+            customerCheckLink.value = link;
+            qrVisible.value = true;
+            return;
+        }
         // Nothing left to pick here: back to the list
         if (!editablePickingUuids.value.size) router.push({ name: 'home' });
     } catch (error) {
@@ -339,9 +390,15 @@ async function finish() {
     }
 }
 
+watch(qrVisible, (open) => {
+    if (!open && customerCheckLink.value && !editablePickingUuids.value.size) router.push({ name: 'home' });
+});
+
 watch(() => props.batchUuid, load, { immediate: true });
 onBeforeUnmount(() => {
     clearInterval(refreshTimer);
+    unsubscribe?.();
+    unsubscribeBatch?.();
     flushPendingSaves();
 });
 </script>
@@ -359,7 +416,7 @@ onBeforeUnmount(() => {
                         <div v-if="batch" class="flex flex-wrap items-center gap-2 mt-1 text-muted-color">
                             <span>Responsável: {{ batch.userName }}</span>
                             <span>·</span>
-                            <span>Iniciada em {{ formatDateTime(batch.createdAt) }}</span>
+                            <span>Atribuída em {{ formatDateTime(batch.createdAt) }}</span>
                             <template v-if="multiple">
                                 <span>·</span>
                                 <span>{{ pickings.length }} remessas</span>
@@ -369,15 +426,7 @@ onBeforeUnmount(() => {
                 </div>
                 <div v-if="batch" class="flex gap-2">
                     <Button icon="pi pi-refresh" severity="secondary" outlined aria-label="Atualizar" v-tooltip.bottom="'Atualizar'" :disabled="pendingSaves" @click="refresh" />
-                    <Button
-                        v-if="batchMine"
-                        label="Adicionar remessa"
-                        icon="pi pi-plus"
-                        severity="secondary"
-                        :disabled="pendingSaves"
-                        v-tooltip.bottom="pendingSaves ? 'Aguarde salvar as quantidades' : 'Separar outras remessas junto com esta'"
-                        @click="addVisible = true"
-                    />
+                    <Button v-if="batchMine && anyPending" label="Iniciar separação" icon="pi pi-play" :loading="starting" @click="confirmStart" />
                 </div>
             </div>
 
@@ -393,6 +442,7 @@ onBeforeUnmount(() => {
             </div>
 
             <template v-else-if="batch">
+                <Message v-if="batchMine && anyPending" severity="info" class="mt-4">Inicie a separação para registrar as quantidades separadas.</Message>
                 <Message v-if="!batchMine && anyInProgress" severity="info" class="mt-4">Esta separação é de {{ batch.userName }}. Você pode acompanhar, mas só o responsável pode alterá-la.</Message>
                 <Message v-if="openIssues.length" severity="warn" class="mt-4">
                     {{ openIssues.length === 1 ? 'Há 1 falta aguardando' : `Há ${openIssues.length} faltas aguardando` }} resolução do administrador. Continue separando os outros itens; a remessa com falta só pode ser concluída depois que a falta for
@@ -410,18 +460,6 @@ onBeforeUnmount(() => {
                                 </div>
                             </div>
                             <div class="flex gap-2">
-                                <Button
-                                    v-if="multiple && isEditable(picking)"
-                                    icon="pi pi-sign-out"
-                                    severity="secondary"
-                                    text
-                                    rounded
-                                    :aria-label="`Retirar a remessa ${shipmentLabel(picking.shipment)} desta separação`"
-                                    v-tooltip.top="pendingSaves ? 'Aguarde salvar as quantidades' : 'Retirar remessa desta separação'"
-                                    :disabled="pendingSaves"
-                                    :loading="removingUuid === picking.uuid"
-                                    @click="confirmRemove(picking)"
-                                />
                                 <Button
                                     v-if="isEditable(picking)"
                                     :label="multiple ? 'Concluir remessa' : 'Concluir separação'"
@@ -622,7 +660,6 @@ onBeforeUnmount(() => {
     </div>
 
     <PickingIssueDialog v-model:visible="issueVisible" :pickingUuid="issueItem?.pickingUuid ?? ''" :item="issueItem" :shipmentLabel="multiple ? issueItem?.shipmentLabel : null" @reported="onIssueReported" />
-    <PickingBatchAddDialog v-model:visible="addVisible" :batch="batch" @added="onShipmentsAdded" />
 
     <Dialog v-model:visible="finishVisible" :header="multiple ? 'Concluir remessa' : 'Concluir separação'" modal :closable="!finishing" :style="{ width: '30rem' }" :breakpoints="{ '575px': '95vw' }">
         <form v-if="finishPicking" id="finish-form" class="flex flex-col gap-5" @submit.prevent="finish">
@@ -636,15 +673,23 @@ onBeforeUnmount(() => {
                 <ToggleSwitch inputId="finish-inspection" v-model="finishForm.customerInspection" />
             </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div class="flex flex-col gap-2">
-                    <label for="finish-company" class="font-medium">Pessoas da Temec</label>
-                    <InputNumber inputId="finish-company" v-model="finishForm.companyPersonQty" :min="1" :max="99" showButtons fluid />
+            <div v-if="finishForm.customerInspection" class="flex flex-col gap-2">
+                <label for="finish-inspector" class="font-medium">Inspetor do cliente</label>
+                <InputText id="finish-inspector" v-model="finishForm.customerInspectorName" maxlength="255" placeholder="Nome de quem acompanhou" :invalid="finishSubmitted && !inspectorName" fluid />
+                <small v-if="finishSubmitted && !inspectorName" class="text-red-500">Informe o nome do inspetor do cliente</small>
+            </div>
+
+            <div v-if="finishForm.customerInspection && canOfferCustomerCheck" class="flex flex-col gap-1">
+                <div class="flex items-center justify-between gap-4">
+                    <label for="finish-customer-check" class="font-medium">Cliente vai fazer a conferência</label>
+                    <ToggleSwitch inputId="finish-customer-check" v-model="finishForm.customerCheck" />
                 </div>
-                <div class="flex flex-col gap-2">
-                    <label for="finish-customer" class="font-medium">Pessoas do cliente</label>
-                    <InputNumber inputId="finish-customer" v-model="finishForm.customerPersonQty" :min="0" :max="99" showButtons fluid />
-                </div>
+                <small class="text-muted-color">O inspetor confere pelo celular, lendo um QR Code, no lugar do conferente{{ multiple ? ', todas as remessas do grupo' : '' }}.</small>
+            </div>
+
+            <div class="flex flex-col gap-2 sm:w-1/2">
+                <label for="finish-company" class="font-medium">Pessoas da Temec</label>
+                <InputNumber inputId="finish-company" v-model="finishForm.companyPersonQty" :min="1" :max="99" showButtons fluid />
             </div>
 
             <Message v-if="finishError" severity="error" size="small" variant="simple">{{ finishError }}</Message>
@@ -655,4 +700,6 @@ onBeforeUnmount(() => {
             <Button type="submit" form="finish-form" label="Concluir" icon="pi pi-check" :loading="finishing" />
         </template>
     </Dialog>
+
+    <CustomerCheckQrDialog v-model:visible="qrVisible" :link="customerCheckLink" />
 </template>

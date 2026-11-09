@@ -1,20 +1,21 @@
 import { http } from './http';
 
+/** The picker's side: their assigned batches and the pickings in them */
 export const PickingService = {
-    /** Shipments without picking, or whose picking is in progress */
-    listQueue: () => http.get('/shipments?toPick=true'),
-    /** Starts the shipment's picking in a batch of its own; returns the picking, with its batchUuid */
-    start: (shipmentUuid) => http.post('/pickings', { shipmentUuid }),
+    /** Batches assigned to the caller with a picking still to do, with each shipment's progress */
+    listMine: () => http.get('/picking-batches/mine'),
     get: (pickingUuid) => http.get(`/pickings/${pickingUuid}`),
     /** Pickings picked together on one screen; each one is finished on its own */
     getBatch: (batchUuid) => http.get(`/picking-batches/${batchUuid}`),
-    /** Starts the shipment's picking in the batch, or moves the caller's picking in progress into it; returns the batch */
-    addShipmentToBatch: (batchUuid, shipmentUuid) => http.post(`/picking-batches/${batchUuid}/shipments`, { shipmentUuid }),
-    /** The picking keeps going in a batch of its own; returns the batch it left */
-    removeFromBatch: (batchUuid, pickingUuid) => http.delete(`/picking-batches/${batchUuid}/pickings/${pickingUuid}`),
+    /** The assigned picker starts the batch: every "Pendente" picking goes "Em andamento"; returns the batch */
+    startBatch: (batchUuid) => http.post(`/picking-batches/${batchUuid}/start`),
     /** Sets (not adds) the quantity picked so far */
     setItemQty: (pickingUuid, lineUuid, qty) => http.put(`/pickings/${pickingUuid}/items/${lineUuid}`, { qty }),
-    /** @param {{ customerInspection: boolean, companyPersonQty: number, customerPersonQty: number }} details */
+    /**
+     * @param {{ customerInspection: boolean, customerInspectorName?: string, companyPersonQty: number, customerCheck?: boolean }} details
+     *   the name is required with an inspection; `customerCheck` (last picking of a one-customer batch) hands the check to
+     *   the customer's inspector, and the response then has `customerCheckLink` ({ checkUuid, token, expiresAt })
+     */
     finish: (pickingUuid, details) => http.post(`/pickings/${pickingUuid}/finish`, details),
     listIssueTypes: () => http.get('/picking-issue-types'),
     /** @param {{ lineUuid: string, issueTypeUuid: string, qty: number, description?: string }} issue; returns the whole picking */

@@ -1,4 +1,4 @@
-import { USER_TYPE } from '@/constants/userType';
+import { SUPERVISOR_TYPES, USER_TYPE } from '@/constants/userType';
 import AppLayout from '@/layout/AppLayout.vue';
 import { AuthService } from '@/service/AuthService';
 import { PickingService } from '@/service/PickingService';
@@ -34,21 +34,21 @@ const router = createRouter({
                 {
                     path: 'checks/:checkUuid',
                     name: 'check',
-                    meta: { title: 'Conferência', userTypes: [USER_TYPE.CHECKER] },
+                    meta: { title: 'Conferência', userTypes: [USER_TYPE.OPERATOR] },
                     component: () => import('@/views/checks/CheckView.vue'),
                     props: true
                 },
                 {
                     path: 'picking-batches/:batchUuid',
                     name: 'picking',
-                    meta: { title: 'Separação', userTypes: [USER_TYPE.PICKER] },
+                    meta: { title: 'Separação', userTypes: [USER_TYPE.OPERATOR] },
                     component: () => import('@/views/pickings/PickingView.vue'),
                     props: true
                 },
                 {
                     // Older links to a single picking open the batch it belongs to
                     path: 'pickings/:pickingUuid',
-                    meta: { userTypes: [USER_TYPE.PICKER] },
+                    meta: { userTypes: [USER_TYPE.OPERATOR] },
                     // Never shown: beforeEnter always redirects (a record with `redirect` would skip beforeEnter)
                     component: () => import('@/views/pickings/PickingView.vue'),
                     beforeEnter: async (to) => {
@@ -59,6 +59,19 @@ const router = createRouter({
                             return { name: 'home', replace: true };
                         }
                     }
+                },
+                {
+                    path: 'assignments',
+                    name: 'assignments',
+                    meta: { title: 'Atribuições', userTypes: SUPERVISOR_TYPES },
+                    component: () => import('@/views/assignments/AssignmentBoard.vue')
+                },
+                {
+                    path: 'assignments/:batchUuid',
+                    name: 'assignment',
+                    meta: { title: 'Grupo de separação', userTypes: SUPERVISOR_TYPES },
+                    component: () => import('@/views/assignments/PickingBatchDetail.vue'),
+                    props: true
                 },
                 {
                     path: 'shipments',
@@ -74,6 +87,14 @@ const router = createRouter({
                     props: true
                 }
             ]
+        },
+        {
+            // Public, outside the layout: the customer's inspector checks from the QR Code, without a login
+            path: '/customer-check/:token',
+            name: 'customerCheck',
+            meta: { public: true, title: 'Conferência de materiais' },
+            component: () => import('@/views/customer-check/CustomerCheck.vue'),
+            props: true
         },
         {
             path: '/auth/login',
@@ -130,6 +151,30 @@ router.beforeEach(async (to) => {
 
 router.afterEach((to) => {
     document.title = to.meta.title ? `${to.meta.title} | Confertec` : 'Confertec';
+});
+
+// A page whose code fails to load (usually files replaced by a new deploy) would leave the click doing nothing:
+// reload that address once, and show the error page if it fails again
+const RELOADED_KEY = 'confertec.reloadedFor';
+router.onError((error, to) => {
+    console.error(error);
+    let reloadedFor = null;
+    try {
+        reloadedFor = sessionStorage.getItem(RELOADED_KEY);
+        sessionStorage.setItem(RELOADED_KEY, to.fullPath);
+    } catch {
+        // Storage blocked: go straight to the error page, never into a reload loop
+        reloadedFor = to.fullPath;
+    }
+    if (reloadedFor === to.fullPath) router.push({ name: 'error' });
+    else window.location.assign(to.fullPath);
+});
+router.afterEach(() => {
+    try {
+        sessionStorage.removeItem(RELOADED_KEY);
+    } catch {
+        // Nothing to clear
+    }
 });
 
 setSessionExpiredHandler(() => {

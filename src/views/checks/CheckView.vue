@@ -1,5 +1,6 @@
 <script setup>
 import { CheckService } from '@/service/CheckService';
+import { realtime } from '@/service/realtime';
 import { session } from '@/service/session';
 import { formatDateTime } from '@/utils/date';
 import { useToast } from 'primevue/usetoast';
@@ -33,7 +34,9 @@ const itemFilterOptions = [
 const finishVisible = ref(false);
 const finishing = ref(false);
 const finishError = ref('');
-const finishForm = reactive({ customerInspection: false, companyPersonQty: 1, customerPersonQty: 0 });
+const finishForm = reactive({ customerInspection: false, customerInspectorName: '', companyPersonQty: 1 });
+const finishSubmitted = ref(false);
+const inspectorName = computed(() => finishForm.customerInspectorName.trim());
 
 const timers = new Map();
 const qtyFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 });
@@ -106,21 +109,25 @@ function flushPendingSaves() {
 
 function openFinish() {
     finishForm.customerInspection = check.value.customerInspection;
+    finishForm.customerInspectorName = check.value.customerInspectorName ?? '';
     finishForm.companyPersonQty = check.value.companyPersonQty;
-    finishForm.customerPersonQty = check.value.customerPersonQty;
+    finishSubmitted.value = false;
     finishError.value = '';
     finishVisible.value = true;
 }
 
 async function finish() {
+    finishSubmitted.value = true;
+    if (finishForm.customerInspection && !inspectorName.value) return;
     finishing.value = true;
     finishError.value = '';
     try {
         applyCheck(
             await CheckService.finish(props.checkUuid, {
                 customerInspection: finishForm.customerInspection,
-                companyPersonQty: finishForm.companyPersonQty ?? 1,
-                customerPersonQty: finishForm.customerPersonQty ?? 0
+                // Only sent with an inspection: the API stores no name without one
+                customerInspectorName: finishForm.customerInspection ? inspectorName.value : undefined,
+                companyPersonQty: finishForm.companyPersonQty ?? 1
             })
         );
         finishVisible.value = false;
@@ -136,8 +143,23 @@ async function finish() {
     }
 }
 
+/** The Encarregado handed this check to another checker: this screen leaves, the counts stay with the check */
+const unsubscribe = realtime.subscribe('pickingBatch.changed', async (message) => {
+    if (!check.value || (!message.reconnected && message.batchUuid !== check.value.batchUuid)) return;
+    try {
+        await CheckService.get(props.checkUuid);
+    } catch (error) {
+        if (error.status !== 400) return;
+        toast.add({ severity: 'warn', summary: 'Conferência reatribuída', detail: error.message, life: 8000 });
+        router.push({ name: 'home' });
+    }
+});
+
 watch(() => props.checkUuid, load, { immediate: true });
-onBeforeUnmount(flushPendingSaves);
+onBeforeUnmount(() => {
+    unsubscribe();
+    flushPendingSaves();
+});
 </script>
 
 <template>
@@ -296,15 +318,15 @@ onBeforeUnmount(flushPendingSaves);
                 <ToggleSwitch inputId="check-inspection" v-model="finishForm.customerInspection" />
             </div>
 
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div class="flex flex-col gap-2">
-                    <label for="check-company" class="font-medium">Pessoas da Temec</label>
-                    <InputNumber inputId="check-company" v-model="finishForm.companyPersonQty" :min="1" :max="99" showButtons fluid />
-                </div>
-                <div class="flex flex-col gap-2">
-                    <label for="check-customer" class="font-medium">Pessoas do cliente</label>
-                    <InputNumber inputId="check-customer" v-model="finishForm.customerPersonQty" :min="0" :max="99" showButtons fluid />
-                </div>
+            <div v-if="finishForm.customerInspection" class="flex flex-col gap-2">
+                <label for="check-inspector" class="font-medium">Inspetor do cliente</label>
+                <InputText id="check-inspector" v-model="finishForm.customerInspectorName" maxlength="255" placeholder="Nome de quem acompanhou" :invalid="finishSubmitted && !inspectorName" fluid />
+                <small v-if="finishSubmitted && !inspectorName" class="text-red-500">Informe o nome do inspetor do cliente</small>
+            </div>
+
+            <div class="flex flex-col gap-2 sm:w-1/2">
+                <label for="check-company" class="font-medium">Pessoas da Temec</label>
+                <InputNumber inputId="check-company" v-model="finishForm.companyPersonQty" :min="1" :max="99" showButtons fluid />
             </div>
 
             <Message v-if="finishError" severity="error" size="small" variant="simple">{{ finishError }}</Message>

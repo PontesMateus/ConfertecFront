@@ -1,5 +1,5 @@
 <script setup>
-import { USER_TYPE } from '@/constants/userType';
+import { SUPERVISOR_TYPES, USER_TYPE } from '@/constants/userType';
 import { session } from '@/service/session';
 import { computed } from 'vue';
 import AppMenuItem from './AppMenuItem.vue';
@@ -9,6 +9,10 @@ const sections = [
     {
         label: 'Geral',
         items: [{ label: 'Início', icon: 'pi pi-fw pi-home', to: '/' }]
+    },
+    {
+        label: 'Operação',
+        items: [{ label: 'Atribuições', icon: 'pi pi-fw pi-sitemap', to: '/assignments', userTypes: SUPERVISOR_TYPES }]
     },
     {
         label: 'Administração',

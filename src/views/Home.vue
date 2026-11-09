@@ -1,6 +1,7 @@
 <script setup>
 import { USER_TYPE } from '@/constants/userType';
 import { session } from '@/service/session';
+import AssignmentBoard from '@/views/assignments/AssignmentBoard.vue';
 import CheckQueue from '@/views/checks/CheckQueue.vue';
 import RejectedCheckList from '@/views/checks/RejectedCheckList.vue';
 import PickingIssueList from '@/views/issues/PickingIssueList.vue';
@@ -8,14 +9,21 @@ import PickingQueue from '@/views/pickings/PickingQueue.vue';
 import { computed } from 'vue';
 
 const firstName = computed(() => session.state.user?.name?.split(' ')[0] ?? '');
-const isPicker = computed(() => session.hasUserType([USER_TYPE.PICKER]));
+const isOperator = computed(() => session.hasUserType([USER_TYPE.OPERATOR]));
+const isSupervisor = computed(() => session.hasUserType([USER_TYPE.SUPERVISOR]));
 const isAdministrator = computed(() => session.hasUserType([USER_TYPE.ADMINISTRATOR]));
-const isChecker = computed(() => session.hasUserType([USER_TYPE.CHECKER]));
 </script>
 
 <template>
-    <PickingQueue v-if="isPicker" />
-    <CheckQueue v-else-if="isChecker" />
+    <!-- A Conferente picks and checks: both queues, each with only what is assigned to them -->
+    <div v-if="isOperator" class="flex flex-col gap-6">
+        <PickingQueue />
+        <CheckQueue />
+    </div>
+    <div v-else-if="isSupervisor" class="flex flex-col gap-6">
+        <AssignmentBoard />
+        <RejectedCheckList />
+    </div>
     <template v-else-if="isAdministrator">
         <PickingIssueList />
         <RejectedCheckList />

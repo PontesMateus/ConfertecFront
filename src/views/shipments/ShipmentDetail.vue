@@ -2,6 +2,7 @@
 import { PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
 import { CheckService } from '@/service/CheckService';
 import { ShipmentService } from '@/service/ShipmentService';
+import { useRealtimeRefresh } from '@/service/realtime';
 import { formatDate, formatDateTime } from '@/utils/date';
 import { useConfirm } from 'primevue/useconfirm';
 import { useToast } from 'primevue/usetoast';
@@ -54,18 +55,33 @@ const headerFields = computed(() => [
     { label: 'Importada em', value: formatDateTime(shipment.value.createdAt) }
 ]);
 
-async function load() {
-    loading.value = true;
-    loadError.value = '';
+let loadSeq = 0;
+
+/** `silent`: a refetch pushed by the server, without the loading state; a failure keeps the current page. */
+async function load({ silent = false } = {}) {
+    const seq = ++loadSeq;
+    if (!silent) {
+        loading.value = true;
+        loadError.value = '';
+    }
     try {
-        [shipment.value, checks.value] = await Promise.all([ShipmentService.get(props.shipmentUuid), CheckService.listByShipment(props.shipmentUuid)]);
+        const result = await Promise.all([ShipmentService.get(props.shipmentUuid), CheckService.listByShipment(props.shipmentUuid)]);
+        // Only the latest request applies, so a slow response never overwrites a newer page
+        if (seq !== loadSeq) return;
+        [shipment.value, checks.value] = result;
+        loadError.value = '';
         document.title = `Remessa ${label.value} | Confertec`;
     } catch (error) {
-        loadError.value = error.message;
+        if (!silent && seq === loadSeq) loadError.value = error.message;
     } finally {
-        loading.value = false;
+        if (seq === loadSeq) loading.value = false;
     }
 }
+
+// A check of this shipment started or finished, or an issue was resolved (a substitution creates a revision)
+useRealtimeRefresh('shipments.changed', () => load({ silent: true }), {
+    when: (message) => message.shipmentUuids?.includes(props.shipmentUuid)
+});
 
 function onSaved(saved) {
     // The header response carries no items or revisions; keep the loaded ones
@@ -95,7 +111,11 @@ async function deleteShipment() {
     }
 }
 
-watch(() => props.shipmentUuid, load, { immediate: true });
+watch(
+    () => props.shipmentUuid,
+    () => load(),
+    { immediate: true }
+);
 </script>
 
 <template>
@@ -113,7 +133,7 @@ watch(() => props.shipmentUuid, load, { immediate: true });
                             <span class="flex items-center gap-1">
                                 Separação:
                                 <Tag v-if="shipment.pickingStatus" :value="shipment.pickingStatus" :severity="PICKING_STATUS_SEVERITY[shipment.pickingStatus]" />
-                                <span v-else class="text-color">não iniciada</span>
+                                <span v-else class="text-color">não atribuída</span>
                             </span>
                             <span class="flex items-center gap-1">
                                 Conferência:
@@ -135,7 +155,7 @@ watch(() => props.shipmentUuid, load, { immediate: true });
             <Message v-if="loadError" severity="error" class="mt-4">
                 <div class="flex flex-wrap items-center gap-3">
                     <span>{{ loadError }}</span>
-                    <Button label="Tentar novamente" size="small" severity="secondary" @click="load" />
+                    <Button label="Tentar novamente" size="small" severity="secondary" @click="load()" />
                 </div>
             </Message>
 
@@ -153,6 +173,17 @@ watch(() => props.shipmentUuid, load, { immediate: true });
                     <dd class="m-0 mt-1 font-medium">
                         <span v-if="shipment.vehicle">{{ shipment.vehicle }}</span>
                         <Tag v-else value="Não informado" icon="pi pi-exclamation-triangle" severity="warn" />
+                    </dd>
+                </div>
+                <div>
+                    <dt class="text-sm text-muted-color">Atribuição</dt>
+                    <dd class="m-0 mt-1 font-medium">
+                        <template v-if="shipment.picking">
+                            <div>Separa: {{ shipment.picking.batchUserName }}</div>
+                            <div>Confere: {{ shipment.picking.checker?.name ?? '—' }}</div>
+                            <Button label="Abrir grupo" icon="pi pi-sitemap" link class="p-0" @click="router.push({ name: 'assignment', params: { batchUuid: shipment.picking.batchUuid } })" />
+                        </template>
+                        <Tag v-else value="Sem atribuição" severity="secondary" />
                     </dd>
                 </div>
             </dl>
@@ -185,7 +216,7 @@ watch(() => props.shipmentUuid, load, { immediate: true });
         </div>
 
         <!-- A resolution may create a revision: reload items and revisions -->
-        <PickingIssueList v-if="shipment?.picked" :shipmentUuid="shipmentUuid" @resolved="load" />
+        <PickingIssueList v-if="shipment?.picked" :shipmentUuid="shipmentUuid" @resolved="load()" />
 
         <div v-if="shipment && checks.length" class="card mb-0">
             <h2 class="text-xl font-semibold m-0 mb-4">Conferências</h2>
@@ -193,6 +224,7 @@ watch(() => props.shipmentUuid, load, { immediate: true });
                 <Column header="Conferente" class="whitespace-nowrap">
                     <template #body="{ data }">
                         <div class="font-medium">{{ data.userName }}</div>
+                        <Tag v-if="data.byCustomer" value="Inspetor do cliente" icon="pi pi-qrcode" severity="secondary" class="mt-1" />
                         <div class="text-xs text-muted-color">Iniciada em {{ formatDateTime(data.createdAt) }}</div>
                         <div v-if="data.shipments.length > 1" class="text-xs text-muted-color mt-1">
                             <i class="pi pi-link text-xs mr-1"></i>Junto com
@@ -235,8 +267,8 @@ watch(() => props.shipmentUuid, load, { immediate: true });
                 <Column header="Acompanhamento" class="whitespace-nowrap">
                     <template #body="{ data }">
                         <template v-if="data.finishedAt">
-                            <div>{{ data.customerInspection ? 'Com o cliente' : 'Sem o cliente' }}</div>
-                            <div class="text-xs text-muted-color">Temec: {{ data.companyPersonQty }} · cliente: {{ data.customerPersonQty }}</div>
+                            <div>{{ data.customerInspection ? `Com o cliente${data.customerInspectorName ? `: ${data.customerInspectorName}` : ''}` : 'Sem o cliente' }}</div>
+                            <div class="text-xs text-muted-color">Pessoas da Temec: {{ data.companyPersonQty }}</div>
                         </template>
                         <span v-else class="text-muted-color">—</span>
                     </template>

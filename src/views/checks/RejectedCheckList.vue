@@ -1,5 +1,8 @@
 <script setup>
+import { USER_TYPE } from '@/constants/userType';
 import { CheckService } from '@/service/CheckService';
+import { useRealtimeRefresh } from '@/service/realtime';
+import { session } from '@/service/session';
 import { formatDateTime } from '@/utils/date';
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -16,21 +19,42 @@ function shipmentLabel(shipment) {
     return `${shipment.record}-${shipment.recordReceipt}`;
 }
 
+/** The Administrador opens the shipment; the Encarregado, who has no shipment pages, opens the batch to reassign it */
+function openShipment(check, shipment) {
+    if (session.hasUserType([USER_TYPE.ADMINISTRATOR])) router.push({ name: 'shipment', params: { shipmentUuid: shipment.uuid } });
+    else router.push({ name: 'assignment', params: { batchUuid: check.batchUuid } });
+}
+
 function formatQty(qty) {
     return qty === null ? '—' : qtyFormat.format(qty);
 }
 
-async function load() {
-    loading.value = true;
-    loadError.value = '';
+let loadSeq = 0;
+
+/** `silent`: a refetch pushed by the server, without the loading overlay; a failure keeps the current list. */
+async function load({ silent = false } = {}) {
+    const seq = ++loadSeq;
+    if (!silent) {
+        loading.value = true;
+        loadError.value = '';
+    }
     try {
-        checks.value = await CheckService.listRejected();
+        const result = await CheckService.listRejected();
+        // Only the latest request applies, so a slow response never overwrites a newer list
+        if (seq === loadSeq) {
+            checks.value = result;
+            loadError.value = '';
+        }
     } catch (error) {
-        loadError.value = error.message;
+        if (!silent && seq === loadSeq) loadError.value = error.message;
     } finally {
-        loading.value = false;
+        if (seq === loadSeq) loading.value = false;
     }
 }
+
+// Checks start and finish on the same events as the check queue: a rejected check lists the batch, a recount
+// shows who is counting, an approval takes it off
+useRealtimeRefresh('checkQueue.changed', () => load({ silent: true }));
 
 onMounted(load);
 </script>
@@ -42,13 +66,13 @@ onMounted(load);
                 <h2 class="text-2xl font-semibold m-0">Conferências com divergência</h2>
                 <p class="text-muted-color m-0 mt-1">Conferências que não bateram com o que foi separado. A separação continua disponível para uma nova conferência e sai daqui quando uma delas for aprovada.</p>
             </div>
-            <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :loading="loading" @click="load" />
+            <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :loading="loading" @click="load()" />
         </div>
 
         <Message v-if="loadError" severity="error" class="mb-4">
             <div class="flex flex-wrap items-center gap-3">
                 <span>{{ loadError }}</span>
-                <Button label="Tentar novamente" size="small" severity="secondary" @click="load" />
+                <Button label="Tentar novamente" size="small" severity="secondary" @click="load()" />
             </div>
         </Message>
 
@@ -60,7 +84,7 @@ onMounted(load);
             <Column header="Remessa" class="whitespace-nowrap">
                 <template #body="{ data }">
                     <div v-for="shipment in data.shipments" :key="shipment.uuid">
-                        <Button :label="shipmentLabel(shipment)" link class="p-0 font-medium" @click="router.push({ name: 'shipment', params: { shipmentUuid: shipment.uuid } })" />
+                        <Button :label="shipmentLabel(shipment)" link class="p-0 font-medium" @click="openShipment(data, shipment)" />
                         <div class="text-xs text-muted-color">{{ shipment.customer ?? '—' }}</div>
                     </div>
                     <Tag v-if="data.shipments.length > 1" value="Conferidas juntas" icon="pi pi-link" severity="secondary" class="mt-1" />

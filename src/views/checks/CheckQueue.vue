@@ -1,5 +1,6 @@
 <script setup>
 import { CheckService } from '@/service/CheckService';
+import { useRealtimeRefresh } from '@/service/realtime';
 import { session } from '@/service/session';
 import { formatDateTime } from '@/utils/date';
 import { useConfirm } from 'primevue/useconfirm';
@@ -43,17 +44,31 @@ function isMine(entry) {
     return entry.check?.userUuid === myUuid.value;
 }
 
-async function load() {
-    loading.value = true;
-    loadError.value = '';
+let loadSeq = 0;
+
+/** `silent`: a refetch pushed by the server, without the loading overlay; a failure keeps the current list. */
+async function load({ silent = false } = {}) {
+    const seq = ++loadSeq;
+    if (!silent) {
+        loading.value = true;
+        loadError.value = '';
+    }
     try {
-        entries.value = await CheckService.listQueue();
+        const result = await CheckService.listQueue();
+        // Only the latest request applies, so a slow response never overwrites a newer list
+        if (seq === loadSeq) {
+            entries.value = result;
+            loadError.value = '';
+        }
     } catch (error) {
-        loadError.value = error.message;
+        if (!silent && seq === loadSeq) loadError.value = error.message;
     } finally {
-        loading.value = false;
+        if (seq === loadSeq) loading.value = false;
     }
 }
+
+// A picking was finished (its batch may be ready), a batch changed, or a check started or finished
+useRealtimeRefresh('checkQueue.changed', () => load({ silent: true }));
 
 function openCheck(checkUuid) {
     router.push({ name: 'check', params: { checkUuid } });
@@ -64,7 +79,9 @@ function confirmStart(entry) {
     const what = entry.shipments.length > 1 ? `das remessas ${label(entry)}, separadas juntas (${items}). Os materiais das remessas são contados juntos` : `da remessa ${label(entry)} (${items})`;
     confirm.require({
         header: 'Iniciar conferência',
-        message: `Você será o responsável pela conferência ${what}. Conte cada item sem consultar a remessa. Deseja iniciar?`,
+        message: entry.recount
+            ? `Você será o responsável pela reconferência ${what}. Só os materiais que não bateram na conferência anterior serão contados de novo. Conte cada item sem consultar a remessa. Deseja iniciar?`
+            : `Você será o responsável pela conferência ${what}. Conte cada item sem consultar a remessa. Deseja iniciar?`,
         icon: 'pi pi-check-square',
         rejectProps: { label: 'Cancelar', severity: 'secondary', text: true },
         acceptProps: { label: 'Iniciar conferência' },
@@ -93,16 +110,16 @@ onMounted(load);
     <div class="card">
         <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
             <div>
-                <h1 class="text-2xl font-semibold m-0">Remessas para conferir</h1>
-                <p class="text-muted-color m-0 mt-1">Separações concluídas aguardando conferência, da saída mais próxima para a mais distante. Remessas separadas juntas são conferidas juntas.</p>
+                <h1 class="text-2xl font-semibold m-0">Minhas conferências</h1>
+                <p class="text-muted-color m-0 mt-1">Grupos atribuídos a você com a separação concluída, da saída mais próxima para a mais distante. Remessas separadas juntas são conferidas juntas.</p>
             </div>
-            <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :loading="loading" @click="load" />
+            <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :loading="loading" @click="load()" />
         </div>
 
         <Message v-if="loadError" severity="error" class="mb-4">
             <div class="flex flex-wrap items-center gap-3">
                 <span>{{ loadError }}</span>
-                <Button label="Tentar novamente" size="small" severity="secondary" @click="load" />
+                <Button label="Tentar novamente" size="small" severity="secondary" @click="load()" />
             </div>
         </Message>
 
@@ -117,7 +134,7 @@ onMounted(load);
             </template>
 
             <template #empty>
-                <div class="py-6 text-center text-muted-color">Nenhuma separação aguardando conferência.</div>
+                <div class="py-6 text-center text-muted-color">Nenhuma conferência atribuída a você.</div>
             </template>
 
             <Column header="Remessa" class="whitespace-nowrap">
@@ -127,7 +144,15 @@ onMounted(load);
                         <span class="text-muted-color">-{{ shipment.recordReceipt }}</span>
                     </div>
                     <Tag v-if="data.shipments.length > 1" :value="`${data.shipments.length} remessas juntas`" icon="pi pi-link" severity="secondary" class="mt-1" />
-                    <Tag v-if="data.recount" value="Reconferência" icon="pi pi-replay" severity="warn" class="mt-1" :class="{ 'ml-1': data.shipments.length > 1 }" v-tooltip.top="'A conferência anterior encontrou divergências'" />
+                    <Tag
+                        v-if="data.recount"
+                        value="Reconferência"
+                        icon="pi pi-replay"
+                        severity="warn"
+                        class="mt-1"
+                        :class="{ 'ml-1': data.shipments.length > 1 }"
+                        v-tooltip.top="'A conferência anterior encontrou divergências: só esses materiais são contados de novo'"
+                    />
                 </template>
             </Column>
             <Column header="Saída" class="whitespace-nowrap">

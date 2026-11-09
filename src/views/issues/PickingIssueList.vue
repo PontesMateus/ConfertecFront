@@ -1,5 +1,6 @@
 <script setup>
 import { PickingIssueService } from '@/service/PickingIssueService';
+import { useRealtimeRefresh } from '@/service/realtime';
 import { formatDateTime } from '@/utils/date';
 import { useToast } from 'primevue/usetoast';
 import { computed, ref, watch } from 'vue';
@@ -50,17 +51,31 @@ function shipmentLabel(issue) {
     return `${issue.shipment.record}-${issue.shipment.recordReceipt}`;
 }
 
-async function load() {
-    loading.value = true;
-    loadError.value = '';
+let loadSeq = 0;
+
+/** `silent`: a refetch pushed by the server, without the loading overlay; a failure keeps the current list. */
+async function load({ silent = false } = {}) {
+    const seq = ++loadSeq;
+    if (!silent) {
+        loading.value = true;
+        loadError.value = '';
+    }
     try {
-        issues.value = await PickingIssueService.list(forShipment.value ? { shipmentUuid: props.shipmentUuid } : { open: true });
+        const result = await PickingIssueService.list(forShipment.value ? { shipmentUuid: props.shipmentUuid } : { open: true });
+        // Only the latest request applies, so a slow response never overwrites a newer list
+        if (seq === loadSeq) {
+            issues.value = result;
+            loadError.value = '';
+        }
     } catch (error) {
-        loadError.value = error.message;
+        if (!silent && seq === loadSeq) loadError.value = error.message;
     } finally {
-        loading.value = false;
+        if (seq === loadSeq) loading.value = false;
     }
 }
+
+// A picker reported or withdrew an issue, or another administrator resolved one
+useRealtimeRefresh('pickingIssues.changed', () => load({ silent: true }));
 
 function openResolve(issue) {
     selectedIssue.value = issue;
@@ -79,7 +94,11 @@ function onResolved({ issue: resolved, resolvedIssueCount, revisionNumber }) {
     emit('resolved', { issue: resolved, resolvedIssueCount, revisionNumber });
 }
 
-watch(() => props.shipmentUuid, load, { immediate: true });
+watch(
+    () => props.shipmentUuid,
+    () => load(),
+    { immediate: true }
+);
 </script>
 
 <template>
@@ -95,13 +114,13 @@ watch(() => props.shipmentUuid, load, { immediate: true });
                 <h1 class="text-2xl font-semibold m-0">Faltas aguardando resolução</h1>
                 <p class="text-muted-color m-0 mt-1">Faltas informadas pelos separadores. A separação só pode ser concluída depois que suas faltas forem resolvidas.</p>
             </div>
-            <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :size="forShipment ? 'small' : undefined" :loading="loading" @click="load" />
+            <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :size="forShipment ? 'small' : undefined" :loading="loading" @click="load()" />
         </div>
 
         <Message v-if="loadError" severity="error" class="mb-4">
             <div class="flex flex-wrap items-center gap-3">
                 <span>{{ loadError }}</span>
-                <Button label="Tentar novamente" size="small" severity="secondary" @click="load" />
+                <Button label="Tentar novamente" size="small" severity="secondary" @click="load()" />
             </div>
         </Message>
 

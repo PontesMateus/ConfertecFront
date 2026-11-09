@@ -1,28 +1,23 @@
 <script setup>
+import { PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
 import { PickingService } from '@/service/PickingService';
-import { session } from '@/service/session';
+import { useRealtimeRefresh } from '@/service/realtime';
 import { formatDateTime } from '@/utils/date';
-import { useConfirm } from 'primevue/useconfirm';
-import { useToast } from 'primevue/usetoast';
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 const router = useRouter();
-const toast = useToast();
-const confirm = useConfirm();
 
-const shipments = ref([]);
+/** One entry per batch assigned to the user, with each shipment's picking progress */
+const batches = ref([]);
 const loading = ref(true);
 const loadError = ref('');
 const search = ref('');
-const startingUuid = ref(null);
 
-const myUuid = computed(() => session.state.user?.uuid);
-
-const filteredShipments = computed(() => {
+const filteredBatches = computed(() => {
     const term = normalize(search.value.trim());
-    if (!term) return shipments.value;
-    return shipments.value.filter((shipment) => [label(shipment), shipment.customer, shipment.venture, shipment.vehicle].some((value) => value && normalize(value).includes(term)));
+    if (!term) return batches.value;
+    return batches.value.filter((batch) => batch.shipments.some((shipment) => [label(shipment), shipment.customer, shipment.venture, shipment.vehicle].some((value) => value && normalize(value).includes(term))));
 });
 
 /** Case- and accent-insensitive comparison, so "construcao" finds "Construção". */
@@ -34,86 +29,64 @@ function label(shipment) {
     return `${shipment.record}-${shipment.recordReceipt}`;
 }
 
-function isMine(shipment) {
-    return shipment.picking?.userUuid === myUuid.value;
+/** Earliest shipping time of the batch, to sort by what leaves first */
+function firstShippingAt(batch) {
+    return batch.shipments.map((shipment) => shipment.shippingAt).sort()[0];
 }
 
-async function load() {
-    loading.value = true;
-    loadError.value = '';
+const sortedBatches = computed(() => [...filteredBatches.value].sort((a, b) => firstShippingAt(a).localeCompare(firstShippingAt(b))));
+
+let loadSeq = 0;
+
+/** `silent`: a refetch pushed by the server, without the loading overlay; a failure keeps the current list. */
+async function load({ silent = false } = {}) {
+    const seq = ++loadSeq;
+    if (!silent) {
+        loading.value = true;
+        loadError.value = '';
+    }
     try {
-        shipments.value = await PickingService.listQueue();
+        const result = await PickingService.listMine();
+        // Only the latest request applies, so a slow response never overwrites a newer list
+        if (seq === loadSeq) {
+            batches.value = result;
+            loadError.value = '';
+        }
     } catch (error) {
-        loadError.value = error.message;
+        if (!silent && seq === loadSeq) loadError.value = error.message;
     } finally {
-        loading.value = false;
+        if (seq === loadSeq) loading.value = false;
     }
 }
 
-/** Opens the picking's batch, with every shipment picked together with it */
-function openPicking(batchUuid) {
-    router.push({ name: 'picking', params: { batchUuid } });
-}
+// A batch was assigned to the user, reassigned, changed, or an issue was reported or resolved
+useRealtimeRefresh('pickingQueue.changed', () => load({ silent: true }));
 
-/** How many other shipments of the list are picked on the same screen */
-const batchSizes = computed(() => {
-    const sizes = new Map();
-    for (const shipment of shipments.value) {
-        if (shipment.picking) sizes.set(shipment.picking.batchUuid, (sizes.get(shipment.picking.batchUuid) ?? 0) + 1);
-    }
-    return sizes;
-});
-
-function otherInBatch(shipment) {
-    return (batchSizes.value.get(shipment.picking.batchUuid) ?? 1) - 1;
-}
-
-function confirmStart(shipment) {
-    confirm.require({
-        header: 'Iniciar separação',
-        message: `Você será o responsável pela separação da remessa ${label(shipment)} (${shipment.itemCount} ${shipment.itemCount === 1 ? 'item' : 'itens'}). Deseja iniciar?`,
-        icon: 'pi pi-box',
-        rejectProps: { label: 'Cancelar', severity: 'secondary', text: true },
-        acceptProps: { label: 'Iniciar separação' },
-        accept: () => start(shipment)
-    });
-}
-
-async function start(shipment) {
-    startingUuid.value = shipment.uuid;
-    try {
-        const picking = await PickingService.start(shipment.uuid);
-        openPicking(picking.batchUuid);
-    } catch (error) {
-        toast.add({ severity: 'error', summary: 'Não foi possível iniciar', detail: error.message, life: 5000 });
-        // Someone else may have started it meanwhile
-        load();
-    } finally {
-        startingUuid.value = null;
-    }
+function openBatch(batch) {
+    router.push({ name: 'picking', params: { batchUuid: batch.uuid } });
 }
 
 onMounted(load);
 </script>
 
 <template>
-    <div class="card">
+    <div class="card mb-0">
         <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
             <div>
-                <h1 class="text-2xl font-semibold m-0">Remessas para separar</h1>
-                <p class="text-muted-color m-0 mt-1">Remessas ainda não separadas ou com separação em andamento, da saída mais próxima para a mais distante.</p>
+                <h1 class="text-2xl font-semibold m-0">Minhas separações</h1>
+                <p class="text-muted-color m-0 mt-1">Remessas que o encarregado atribuiu a você, da saída mais próxima para a mais distante. Remessas do mesmo grupo são separadas juntas.</p>
             </div>
-            <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :loading="loading" @click="load" />
+            <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :loading="loading" @click="load()" />
         </div>
 
         <Message v-if="loadError" severity="error" class="mb-4">
             <div class="flex flex-wrap items-center gap-3">
                 <span>{{ loadError }}</span>
-                <Button label="Tentar novamente" size="small" severity="secondary" @click="load" />
+                <Button label="Tentar novamente" size="small" severity="secondary" @click="load()" />
             </div>
         </Message>
 
-        <DataTable :value="filteredShipments" :loading="loading" dataKey="uuid" sortField="shippingAt" :sortOrder="1" paginator :rows="20" :rowsPerPageOptions="[20, 50, 100]" stripedRows>
+        <DataTable :value="sortedBatches" :loading="loading" dataKey="uuid" paginator :rows="20" :rowsPerPageOptions="[20, 50, 100]" stripedRows>
             <template #header>
                 <div class="flex justify-end">
                     <IconField class="w-full sm:w-80">
@@ -124,57 +97,63 @@ onMounted(load);
             </template>
 
             <template #empty>
-                <div class="py-6 text-center text-muted-color">Nenhuma remessa aguardando separação.</div>
+                <div class="py-6 text-center text-muted-color">Nenhuma separação atribuída a você.</div>
             </template>
 
-            <Column field="record" header="Remessa" sortable class="whitespace-nowrap">
+            <Column header="Remessa" class="whitespace-nowrap">
                 <template #body="{ data }">
-                    <span class="font-medium">{{ data.record }}</span>
-                    <span class="text-muted-color">-{{ data.recordReceipt }}</span>
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">
+                        <span class="font-medium">{{ shipment.record }}</span>
+                        <span class="text-muted-color">-{{ shipment.recordReceipt }}</span>
+                    </div>
+                    <Tag v-if="data.shipments.length > 1" :value="`${data.shipments.length} remessas juntas`" icon="pi pi-link" severity="secondary" class="mt-1" />
                 </template>
             </Column>
-            <Column field="shippingAt" header="Saída" sortable class="whitespace-nowrap">
-                <template #body="{ data }">{{ formatDateTime(data.shippingAt) }}</template>
-            </Column>
-            <Column field="customer" header="Cliente" sortable>
-                <template #body="{ data }">{{ data.customer ?? '—' }}</template>
-            </Column>
-            <Column field="venture" header="Obra" sortable>
-                <template #body="{ data }">{{ data.venture ?? '—' }}</template>
-            </Column>
-            <Column field="vehicle" header="Veículo" sortable class="whitespace-nowrap">
+            <Column header="Saída" class="whitespace-nowrap">
                 <template #body="{ data }">
-                    <span v-if="data.vehicle">{{ data.vehicle }}</span>
-                    <Tag v-else value="Não informado" icon="pi pi-exclamation-triangle" severity="warn" />
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">{{ formatDateTime(shipment.shippingAt) }}</div>
+                </template>
+            </Column>
+            <Column header="Cliente">
+                <template #body="{ data }">
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">{{ shipment.customer ?? '—' }}</div>
+                </template>
+            </Column>
+            <Column header="Obra">
+                <template #body="{ data }">
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">{{ shipment.venture ?? '—' }}</div>
+                </template>
+            </Column>
+            <Column header="Veículo" class="whitespace-nowrap">
+                <template #body="{ data }">
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid">
+                        <span v-if="shipment.vehicle">{{ shipment.vehicle }}</span>
+                        <Tag v-else value="Não informado" icon="pi pi-exclamation-triangle" severity="warn" />
+                    </div>
                 </template>
             </Column>
             <Column header="Separação" class="whitespace-nowrap">
                 <template #body="{ data }">
-                    <div v-if="data.picking" class="flex flex-col gap-1 min-w-36">
+                    <div v-for="shipment in data.shipments" :key="shipment.uuid" class="flex flex-col gap-1 min-w-36 mb-2 last:mb-0">
                         <span class="text-sm">
-                            <Tag value="Em andamento" severity="info" class="mr-1" />
-                            {{ isMine(data) ? 'por você' : `por ${data.picking.userName}` }}
+                            <Tag :value="shipment.picking.status" :severity="PICKING_STATUS_SEVERITY[shipment.picking.status]" />
+                            <span class="text-xs text-muted-color ml-1">{{ shipment.picking.doneItemCount }} de {{ shipment.itemCount }} itens</span>
                         </span>
-                        <ProgressBar :value="data.itemCount ? Math.round((data.picking.doneItemCount / data.itemCount) * 100) : 0" :showValue="false" class="h-1.5" />
-                        <span class="text-xs text-muted-color">{{ data.picking.doneItemCount }} de {{ data.itemCount }} itens completos</span>
-                        <span v-if="otherInBatch(data)" class="text-xs text-muted-color"> <i class="pi pi-link text-xs mr-1"></i>Separada junto com {{ otherInBatch(data) === 1 ? 'outra remessa' : `outras ${otherInBatch(data)} remessas` }} </span>
                         <Tag
-                            v-if="data.picking.openIssueCount"
-                            :value="data.picking.openIssueCount === 1 ? '1 falta pendente' : `${data.picking.openIssueCount} faltas pendentes`"
+                            v-if="shipment.picking.openIssueCount"
+                            :value="shipment.picking.openIssueCount === 1 ? '1 falta pendente' : `${shipment.picking.openIssueCount} faltas pendentes`"
                             icon="pi pi-exclamation-triangle"
                             severity="warn"
                             class="self-start"
                         />
                     </div>
-                    <span v-else class="text-muted-color">Não iniciada · {{ data.itemCount }} {{ data.itemCount === 1 ? 'item' : 'itens' }}</span>
                 </template>
             </Column>
             <Column header="" class="w-0 whitespace-nowrap">
                 <template #body="{ data }">
                     <div class="flex justify-end">
-                        <Button v-if="!data.picking" label="Iniciar" icon="pi pi-play" size="small" :loading="startingUuid === data.uuid" :disabled="!!startingUuid" @click="confirmStart(data)" />
-                        <Button v-else-if="isMine(data)" label="Continuar" icon="pi pi-arrow-right" iconPos="right" size="small" severity="contrast" @click="openPicking(data.picking.batchUuid)" />
-                        <Button v-else label="Ver" icon="pi pi-eye" size="small" severity="secondary" outlined v-tooltip.left="`Em separação por ${data.picking.userName}`" @click="openPicking(data.picking.batchUuid)" />
+                        <Button v-if="data.started" label="Continuar" icon="pi pi-arrow-right" iconPos="right" size="small" severity="contrast" @click="openBatch(data)" />
+                        <Button v-else label="Abrir" icon="pi pi-play" size="small" @click="openBatch(data)" />
                     </div>
                 </template>
             </Column>
