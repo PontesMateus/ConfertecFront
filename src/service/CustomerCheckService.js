@@ -10,6 +10,8 @@ export const CustomerCheckService = {
     start: (token, inspectorName, sessionKey) => publicRequest('POST', `/customer-checks/${token}/start`, { inspectorName }, sessionHeader(sessionKey)),
     /** Sets (not adds) the counted quantity of a material, over every shipment; returns whether it matches */
     setItemQty: (token, sessionKey, materialUuid, qty) => publicRequest('PUT', `/customer-checks/${token}/items/${materialUuid}`, { qty }, sessionHeader(sessionKey)),
+    /** The photo of the inspector's ID document, required before counting; returns the check */
+    sendPhoto: (token, sessionKey, photo) => publicRequest('PUT', `/customer-checks/${token}/photo`, photo, sessionHeader(sessionKey)),
     /** Only when every material matches */
     finish: (token, sessionKey) => publicRequest('POST', `/customer-checks/${token}/finish`, {}, sessionHeader(sessionKey))
 };

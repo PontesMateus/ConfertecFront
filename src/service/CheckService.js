@@ -13,7 +13,9 @@ export const CheckService = {
     get: (checkUuid) => http.get(`/checks/${checkUuid}`),
     /** Sets (not adds) the counted quantity of a material, over every shipment of the check */
     setItemQty: (checkUuid, materialUuid, qty) => http.put(`/checks/${checkUuid}/items/${materialUuid}`, { qty }),
-    /** @param {{ customerInspection: boolean, customerInspectorName?: string, companyPersonQty: number }} details; the name is required with an inspection */
+    /** The photo of the customer's inspector's ID document, required to finish with an inspection; returns `{ photoUuid }` */
+    setInspectorPhoto: (checkUuid, photo) => http.put(`/checks/${checkUuid}/customer-inspector-photo`, photo),
+    /** @param {{ customerInspection: boolean, customerInspectorName?: string, companyPersonQty: number }} details; the name and the inspector's photo are required with an inspection */
     finish: (checkUuid, details) => http.post(`/checks/${checkUuid}/finish`, details),
     /** Supervisors, on a customer check: a new link for the QR Code (the old one stops working); returns { token, expiresAt } */
     regenerateCustomerLink: (checkUuid) => http.post(`/checks/${checkUuid}/link`),

@@ -3,6 +3,8 @@ import { CheckService } from '@/service/CheckService';
 import { realtime } from '@/service/realtime';
 import { session } from '@/service/session';
 import { formatDateTime } from '@/utils/date';
+import PhotoButton from '@/views/photos/PhotoButton.vue';
+import PhotoThumb from '@/views/photos/PhotoThumb.vue';
 import { useToast } from 'primevue/usetoast';
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
@@ -37,6 +39,10 @@ const finishError = ref('');
 const finishForm = reactive({ customerInspection: false, customerInspectorName: '', companyPersonQty: 1 });
 const finishSubmitted = ref(false);
 const inspectorName = computed(() => finishForm.customerInspectorName.trim());
+/** Photo of the inspector's ID document, sent as soon as it is taken; required to finish with an inspection */
+const inspectorPhotoUuid = ref(null);
+const inspectorPhotoSending = ref(false);
+const inspectorPhotoError = ref('');
 
 const timers = new Map();
 const qtyFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 });
@@ -49,10 +55,13 @@ const countedCount = computed(() => items.value.filter((item) => item.countedQty
 const progress = computed(() => (items.value.length ? Math.round((countedCount.value / items.value.length) * 100) : 0));
 const pendingSaves = computed(() => items.value.some((item) => item.saveState === 'pending' || item.saveState === 'saving'));
 const canFinish = computed(() => editable.value && items.value.length > 0 && countedCount.value === items.value.length && !pendingSaves.value);
-const visibleItems = computed(() => (itemFilter.value === 'pending' ? items.value.filter((item) => item.countedQty === null || item.saveState !== 'saved') : items.value));
+/** The filter only exists while counting: a finished check shows every item, with its divergences */
+const filterPending = computed(() => itemFilter.value === 'pending' && check.value?.status === 'open');
+const visibleItems = computed(() => (filterPending.value ? items.value.filter((item) => item.countedQty === null || item.saveState !== 'saved') : items.value));
 
 function applyCheck(value) {
     check.value = value;
+    if (value.status !== 'open') itemFilter.value = 'all';
     items.value = value.items.map((item) => ({ ...item, draftQty: item.countedQty, saveState: 'saved', errorMessage: '', seq: 0 }));
 }
 
@@ -111,14 +120,30 @@ function openFinish() {
     finishForm.customerInspection = check.value.customerInspection;
     finishForm.customerInspectorName = check.value.customerInspectorName ?? '';
     finishForm.companyPersonQty = check.value.companyPersonQty;
+    inspectorPhotoUuid.value = check.value.customerInspectorPhotoUuid ?? null;
+    inspectorPhotoError.value = '';
     finishSubmitted.value = false;
     finishError.value = '';
     finishVisible.value = true;
 }
 
+async function sendInspectorPhoto(photo) {
+    inspectorPhotoSending.value = true;
+    inspectorPhotoError.value = '';
+    try {
+        const { photoUuid } = await CheckService.setInspectorPhoto(props.checkUuid, photo);
+        inspectorPhotoUuid.value = photoUuid;
+        check.value.customerInspectorPhotoUuid = photoUuid;
+    } catch (error) {
+        inspectorPhotoError.value = error.message;
+    } finally {
+        inspectorPhotoSending.value = false;
+    }
+}
+
 async function finish() {
     finishSubmitted.value = true;
-    if (finishForm.customerInspection && !inspectorName.value) return;
+    if (finishForm.customerInspection && (!inspectorName.value || !inspectorPhotoUuid.value)) return;
     finishing.value = true;
     finishError.value = '';
     try {
@@ -265,7 +290,7 @@ onBeforeUnmount(() => {
 
             <DataTable :value="visibleItems" dataKey="materialUuid" sortField="materialDescription" :sortOrder="1" stripedRows>
                 <template #empty>
-                    <div class="py-6 text-center text-muted-color">{{ itemFilter === 'pending' ? 'Todos os itens foram contados.' : 'Esta conferência não tem itens.' }}</div>
+                    <div class="py-6 text-center text-muted-color">{{ filterPending ? 'Todos os itens foram contados.' : 'Esta conferência não tem itens.' }}</div>
                 </template>
                 <Column field="materialCode" header="Código" sortable class="whitespace-nowrap">
                     <template #body="{ data }">
@@ -324,6 +349,25 @@ onBeforeUnmount(() => {
                 <small v-if="finishSubmitted && !inspectorName" class="text-red-500">Informe o nome do inspetor do cliente</small>
             </div>
 
+            <div v-if="finishForm.customerInspection" class="flex flex-col gap-2">
+                <span class="font-medium">Documento do inspetor</span>
+                <div class="flex items-center gap-3">
+                    <PhotoThumb v-if="inspectorPhotoUuid" :photoUuid="inspectorPhotoUuid" alt="Foto do documento do inspetor do cliente" sizeClass="w-16 h-16" />
+                    <PhotoButton
+                        :label="inspectorPhotoUuid ? 'Trocar foto' : 'Tirar foto do documento'"
+                        size="small"
+                        :severity="inspectorPhotoUuid ? 'secondary' : undefined"
+                        :outlined="Boolean(inspectorPhotoUuid)"
+                        :loading="inspectorPhotoSending"
+                        :disabled="finishing"
+                        @selected="sendInspectorPhoto"
+                    />
+                </div>
+                <small v-if="inspectorPhotoError" class="text-red-500">{{ inspectorPhotoError }}</small>
+                <small v-else-if="finishSubmitted && !inspectorPhotoUuid" class="text-red-500">Tire a foto do documento do inspetor do cliente</small>
+                <small v-else class="text-muted-color">Documento com foto (RG ou CNH) de quem acompanhou.</small>
+            </div>
+
             <div class="flex flex-col gap-2 sm:w-1/2">
                 <label for="check-company" class="font-medium">Pessoas da Temec</label>
                 <InputNumber inputId="check-company" v-model="finishForm.companyPersonQty" :min="1" :max="99" showButtons fluid />
@@ -334,7 +378,7 @@ onBeforeUnmount(() => {
 
         <template #footer>
             <Button label="Cancelar" severity="secondary" text :disabled="finishing" @click="finishVisible = false" />
-            <Button type="submit" form="finish-check-form" label="Finalizar" icon="pi pi-check" :loading="finishing" />
+            <Button type="submit" form="finish-check-form" label="Finalizar" icon="pi pi-check" :loading="finishing" :disabled="inspectorPhotoSending" />
         </template>
     </Dialog>
 </template>

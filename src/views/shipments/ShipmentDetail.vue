@@ -9,6 +9,7 @@ import { useToast } from 'primevue/usetoast';
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import PickingIssueList from '@/views/issues/PickingIssueList.vue';
+import PhotoThumb from '@/views/photos/PhotoThumb.vue';
 import ShipmentFormDialog from './ShipmentFormDialog.vue';
 
 const props = defineProps({
@@ -186,6 +187,13 @@ watch(
                         <Tag v-else value="Sem atribuição" severity="secondary" />
                     </dd>
                 </div>
+                <div v-if="shipment.picking?.customerInspectorName || shipment.picking?.customerInspectorPhotoUuid">
+                    <dt class="text-sm text-muted-color">Inspetor do cliente na separação</dt>
+                    <dd class="m-0 mt-1 font-medium flex items-center gap-3">
+                        <PhotoThumb v-if="shipment.picking.customerInspectorPhotoUuid" :photoUuid="shipment.picking.customerInspectorPhotoUuid" :alt="`Documento de ${shipment.picking.customerInspectorName ?? 'inspetor do cliente'}`" />
+                        <span>{{ shipment.picking.customerInspectorName ?? '—' }}</span>
+                    </dd>
+                </div>
             </dl>
 
             <Message v-if="shipment && !shipment.vehicle" severity="warn" class="mt-6">
@@ -211,6 +219,14 @@ watch(
                 <Column field="materialDescription" header="Descrição" sortable />
                 <Column field="qty" header="Quantidade" sortable class="text-right whitespace-nowrap">
                     <template #body="{ data }">{{ qtyFormat.format(data.qty) }}</template>
+                </Column>
+                <Column v-if="shipment.items.some((item) => item.photoUuids.length)" header="Fotos da separação">
+                    <template #body="{ data }">
+                        <div v-if="data.photoUuids.length" class="flex flex-wrap gap-2 max-w-64">
+                            <PhotoThumb v-for="(photoUuid, index) in data.photoUuids" :key="photoUuid" :photoUuid="photoUuid" :alt="`Foto ${index + 1} de ${data.materialCode} separado`" />
+                        </div>
+                        <span v-else class="text-muted-color">—</span>
+                    </template>
                 </Column>
             </DataTable>
         </div>
@@ -266,11 +282,14 @@ watch(
                 </Column>
                 <Column header="Acompanhamento" class="whitespace-nowrap">
                     <template #body="{ data }">
-                        <template v-if="data.finishedAt">
-                            <div>{{ data.customerInspection ? `Com o cliente${data.customerInspectorName ? `: ${data.customerInspectorName}` : ''}` : 'Sem o cliente' }}</div>
-                            <div class="text-xs text-muted-color">Pessoas da Temec: {{ data.companyPersonQty }}</div>
-                        </template>
-                        <span v-else class="text-muted-color">—</span>
+                        <div class="flex items-center gap-3">
+                            <PhotoThumb v-if="data.customerInspectorPhotoUuid" :photoUuid="data.customerInspectorPhotoUuid" :alt="`Documento de ${data.byCustomer ? data.userName : (data.customerInspectorName ?? 'inspetor do cliente')}`" />
+                            <div v-if="data.finishedAt">
+                                <div>{{ data.customerInspection ? `Com o cliente${data.customerInspectorName ? `: ${data.customerInspectorName}` : ''}` : 'Sem o cliente' }}</div>
+                                <div class="text-xs text-muted-color">Pessoas da Temec: {{ data.companyPersonQty }}</div>
+                            </div>
+                            <span v-else-if="!data.customerInspectorPhotoUuid" class="text-muted-color">—</span>
+                        </div>
                     </template>
                 </Column>
             </DataTable>

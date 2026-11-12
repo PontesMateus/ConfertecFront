@@ -1,6 +1,7 @@
 <script setup>
 import { CustomerCheckService } from '@/service/CustomerCheckService';
 import { formatDateTime } from '@/utils/date';
+import PhotoButton from '@/views/photos/PhotoButton.vue';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 // Waits for the inspector to stop typing before saving a count
@@ -27,6 +28,8 @@ const starting = ref(false);
 const startError = ref('');
 const finishing = ref(false);
 const finishError = ref('');
+const photoSending = ref(false);
+const photoError = ref('');
 const itemFilter = ref('all');
 const itemFilterOptions = [
     { label: 'Todos', value: 'all' },
@@ -119,6 +122,19 @@ async function start() {
         startError.value = error.message;
     } finally {
         starting.value = false;
+    }
+}
+
+/** The inspector's ID document, required before counting */
+async function sendPhoto(photo) {
+    photoSending.value = true;
+    photoError.value = '';
+    try {
+        applyCheck(await CustomerCheckService.sendPhoto(props.token, sessionKey, photo));
+    } catch (error) {
+        photoError.value = error.message;
+    } finally {
+        photoSending.value = false;
     }
 }
 
@@ -225,6 +241,16 @@ onBeforeUnmount(flushPendingSaves);
                 <Button type="submit" label="Iniciar conferência" icon="pi pi-play" :loading="starting" />
                 <small class="text-muted-color text-center">Link válido até {{ formatDateTime(check.expiresAt) }}</small>
             </form>
+
+            <!-- Started: the ID document before counting -->
+            <div v-else-if="!check.photoSent" class="card mb-0 flex flex-col gap-4">
+                <div>
+                    <h2 class="text-lg font-semibold m-0">Foto do documento</h2>
+                    <p class="m-0 mt-1 text-muted-color">{{ check.inspectorName }}, tire uma foto do seu documento com foto (RG ou CNH) para iniciar a contagem.</p>
+                </div>
+                <Message v-if="photoError" severity="error" size="small" variant="simple">{{ photoError }}</Message>
+                <PhotoButton label="Tirar foto do documento" size="large" :loading="photoSending" @selected="sendPhoto" />
+            </div>
 
             <!-- Counting -->
             <template v-else>

@@ -8,7 +8,8 @@ import { useConfirm } from 'primevue/useconfirm';
 import { useToast } from 'primevue/usetoast';
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import CustomerCheckQrDialog from '@/views/customer-check/CustomerCheckQrDialog.vue';
+import PhotoButton from '@/views/photos/PhotoButton.vue';
+import PhotoThumb from '@/views/photos/PhotoThumb.vue';
 import PickingIssueDialog from './PickingIssueDialog.vue';
 
 // Waits for the picker to stop typing before saving a quantity
@@ -44,24 +45,17 @@ const finishVisible = ref(false);
 const finishing = ref(false);
 const finishError = ref('');
 const finishPicking = ref(null);
-const finishForm = reactive({ customerInspection: false, customerInspectorName: '', companyPersonQty: 1, customerCheck: false });
+const finishForm = reactive({ customerInspection: false, customerInspectorName: '', companyPersonQty: 1 });
 const finishSubmitted = ref(false);
 const inspectorName = computed(() => finishForm.customerInspectorName.trim());
-/** Link of the customer check released when finishing the batch's last picking, shown as a QR Code */
-const customerCheckLink = ref(null);
-const qrVisible = ref(false);
-
-/**
- * The customer's inspector can check instead of the checker when this is the batch's last picking left and every
- * shipment of the batch is of the same customer (the API checks it too)
- */
-const canOfferCustomerCheck = computed(() => {
-    const current = finishPicking.value;
-    if (!current) return false;
-    const others = pickings.value.filter((picking) => picking.uuid !== current.uuid);
-    const customers = new Set(pickings.value.map((picking) => picking.shipment.customer?.trim() || null));
-    return others.every((picking) => picking.status === 'Concluída') && customers.size === 1 && !customers.has(null);
-});
+/** Photo of the inspector's ID document, sent as soon as it is taken; required to finish with an inspection */
+const inspectorPhotoUuid = ref(null);
+const inspectorPhotoSending = ref(false);
+const inspectorPhotoError = ref('');
+/** Material whose photo is being sent, and photo being removed: one photo change at a time */
+const photoMaterialUuid = ref(null);
+const removingPhotoUuid = ref(null);
+const photoBusy = computed(() => Boolean(photoMaterialUuid.value || removingPhotoUuid.value));
 
 const issueVisible = ref(false);
 const issueItem = ref(null);
@@ -100,23 +94,29 @@ function isSaving(entry) {
     return entry.saveState === 'pending' || entry.saveState === 'saving';
 }
 
-// "Accounted": nothing left for the picker to do (picked in full, or the rest reported missing)
+// "Accounted": nothing left for the picker to do (picked in full, or the rest reported missing), photo included
 function isPending(entry) {
-    return !entry.accounted || entry.overQty > 0 || entry.saveState !== 'saved';
+    return !entry.accounted || entry.overQty > 0 || entry.needsPhoto || entry.saveState !== 'saved';
 }
 
-/** Lines grouped by material: a material on several shipments has one counter per shipment */
+/**
+ * Lines grouped by material: a material on several shipments has one counter per shipment, and its photos are shared
+ * by all of them (they are of the batch's material)
+ */
 const materials = computed(() => {
     const byCode = new Map();
     for (const entry of items.value) {
-        if (!byCode.has(entry.materialCode)) byCode.set(entry.materialCode, { materialCode: entry.materialCode, materialDescription: entry.materialDescription, entries: [] });
+        if (!byCode.has(entry.materialCode)) byCode.set(entry.materialCode, { materialUuid: entry.materialUuid, materialCode: entry.materialCode, materialDescription: entry.materialDescription, entries: [] });
         byCode.get(entry.materialCode).entries.push(entry);
     }
     return [...byCode.values()].map((material) => ({
         ...material,
         requiredQty: Math.round(material.entries.reduce((sum, entry) => sum + entry.requiredQty, 0) * 1000) / 1000,
         replacedMaterialCodes: [...new Set(material.entries.map((entry) => entry.replacedMaterialCode).filter(Boolean))],
-        pending: material.entries.some(isPending)
+        pending: material.entries.some(isPending),
+        photoUuids: [...new Set(material.entries.flatMap((entry) => entry.photoUuids))],
+        needsPhoto: material.entries.some((entry) => entry.needsPhoto),
+        photoEditable: material.entries.some(entryEditable)
     }));
 });
 const visibleMaterials = computed(() => (itemFilter.value === 'pending' ? materials.value.filter((material) => material.pending) : materials.value));
@@ -133,6 +133,7 @@ const summaries = computed(() => {
         let finishHint = 'Separe todos os itens por completo para concluir';
         if (openIssueCount) finishHint = 'Há faltas aguardando resolução do administrador';
         else if (picking.removedItems.length || overCount) finishHint = 'Devolva os materiais em excesso para concluir';
+        else if (entries.some((entry) => entry.needsPhoto)) finishHint = 'Tire a foto dos materiais separados para concluir';
         result.set(picking.uuid, {
             total: entries.length,
             done,
@@ -186,7 +187,7 @@ async function load() {
     }
 }
 
-const refreshBlocked = computed(() => pendingSaves.value || issueVisible.value || finishVisible.value || qrVisible.value || loading.value);
+const refreshBlocked = computed(() => pendingSaves.value || issueVisible.value || finishVisible.value || loading.value || Boolean(photoMaterialUuid.value));
 /** A refresh was asked while blocked; it runs as soon as the save ends or the dialog closes */
 let refreshPending = false;
 watch(refreshBlocked, (blocked) => {
@@ -259,11 +260,80 @@ async function save(item) {
     try {
         const saved = await PickingService.setItemQty(item.pickingUuid, item.lineUuid, item.draftQty);
         if (seq !== item.seq) return;
-        Object.assign(item, { pickedQty: saved.pickedQty, done: saved.done, missingQty: saved.missingQty, remainingQty: saved.remainingQty, accounted: saved.accounted, overQty: saved.overQty, saveState: 'saved' });
+        Object.assign(item, {
+            pickedQty: saved.pickedQty,
+            done: saved.done,
+            missingQty: saved.missingQty,
+            remainingQty: saved.remainingQty,
+            accounted: saved.accounted,
+            overQty: saved.overQty,
+            photoUuids: saved.photoUuids,
+            needsPhoto: saved.needsPhoto,
+            saveState: 'saved'
+        });
     } catch (error) {
         if (seq !== item.seq) return;
         // Back to the last saved value, so the screen never shows a quantity the server does not have
         Object.assign(item, { draftQty: item.pickedQty, saveState: 'error', errorMessage: error.message });
+    }
+}
+
+/** Updates the photos of the material's lines from a photo response; typed quantities are kept */
+function applyMaterialPhotos(result) {
+    for (const saved of result.items) {
+        const entry = items.value.find((candidate) => candidate.pickingUuid === saved.pickingUuid && candidate.lineUuid === saved.lineUuid);
+        if (entry) Object.assign(entry, { photoUuids: saved.photoUuids, needsPhoto: saved.needsPhoto, done: saved.done });
+    }
+}
+
+/** Adds a photo to the material's photos */
+async function sendMaterialPhoto(material, photo) {
+    photoMaterialUuid.value = material.materialUuid;
+    try {
+        applyMaterialPhotos(await PickingService.addMaterialPhoto(props.batchUuid, material.materialUuid, photo));
+        toast.add({ severity: 'success', summary: 'Foto enviada', detail: material.materialCode, life: 3000 });
+    } catch (error) {
+        toast.add({ severity: 'error', summary: 'Não foi possível enviar a foto', detail: error.message, life: 5000 });
+    } finally {
+        photoMaterialUuid.value = null;
+    }
+}
+
+function confirmRemoveMaterialPhoto(material, photoUuid) {
+    const last = material.photoUuids.length === 1;
+    confirm.require({
+        header: 'Excluir foto',
+        message: `A foto de ${material.materialCode} será excluída.${last ? ' Sem fotos, o material volta a ficar pendente.' : ''} Deseja continuar?`,
+        icon: 'pi pi-trash',
+        rejectProps: { label: 'Cancelar', severity: 'secondary', text: true },
+        acceptProps: { label: 'Excluir foto', severity: 'danger' },
+        accept: () => removeMaterialPhoto(material, photoUuid)
+    });
+}
+
+async function removeMaterialPhoto(material, photoUuid) {
+    removingPhotoUuid.value = photoUuid;
+    try {
+        applyMaterialPhotos(await PickingService.removeMaterialPhoto(props.batchUuid, material.materialUuid, photoUuid));
+        toast.add({ severity: 'success', summary: 'Foto excluída', detail: material.materialCode, life: 3000 });
+    } catch (error) {
+        toast.add({ severity: 'error', summary: 'Não foi possível excluir a foto', detail: error.message, life: 5000 });
+    } finally {
+        removingPhotoUuid.value = null;
+    }
+}
+
+async function sendInspectorPhoto(photo) {
+    inspectorPhotoSending.value = true;
+    inspectorPhotoError.value = '';
+    try {
+        const { photoUuid } = await PickingService.setInspectorPhoto(finishPicking.value.uuid, photo);
+        inspectorPhotoUuid.value = photoUuid;
+        finishPicking.value.customerInspectorPhotoUuid = photoUuid;
+    } catch (error) {
+        inspectorPhotoError.value = error.message;
+    } finally {
+        inspectorPhotoSending.value = false;
     }
 }
 
@@ -350,7 +420,8 @@ function openFinish(picking) {
     finishForm.customerInspection = picking.customerInspection;
     finishForm.customerInspectorName = picking.customerInspectorName ?? '';
     finishForm.companyPersonQty = picking.companyPersonQty;
-    finishForm.customerCheck = false;
+    inspectorPhotoUuid.value = picking.customerInspectorPhotoUuid ?? null;
+    inspectorPhotoError.value = '';
     finishSubmitted.value = false;
     finishError.value = '';
     finishVisible.value = true;
@@ -360,7 +431,7 @@ async function finish() {
     const picking = finishPicking.value;
     const label = shipmentLabel(picking.shipment);
     finishSubmitted.value = true;
-    if (finishForm.customerInspection && !inspectorName.value) return;
+    if (finishForm.customerInspection && (!inspectorName.value || !inspectorPhotoUuid.value)) return;
     finishing.value = true;
     finishError.value = '';
     try {
@@ -368,19 +439,11 @@ async function finish() {
             customerInspection: finishForm.customerInspection,
             // Only sent with an inspection: the API stores no name without one
             customerInspectorName: finishForm.customerInspection ? inspectorName.value : undefined,
-            companyPersonQty: finishForm.companyPersonQty ?? 1,
-            customerCheck: finishForm.customerInspection && canOfferCustomerCheck.value && finishForm.customerCheck
+            companyPersonQty: finishForm.companyPersonQty ?? 1
         });
-        const { customerCheckLink: link, ...value } = finished;
         finishVisible.value = false;
         toast.add({ severity: 'success', summary: 'Separação concluída', detail: `Remessa ${label}`, life: 4000 });
-        applyPicking(value);
-        if (link) {
-            // The list comes after the QR Code is read: see onQrClosed
-            customerCheckLink.value = link;
-            qrVisible.value = true;
-            return;
-        }
+        applyPicking(finished);
         // Nothing left to pick here: back to the list
         if (!editablePickingUuids.value.size) router.push({ name: 'home' });
     } catch (error) {
@@ -389,10 +452,6 @@ async function finish() {
         finishing.value = false;
     }
 }
-
-watch(qrVisible, (open) => {
-    if (!open && customerCheckLink.value && !editablePickingUuids.value.size) router.push({ name: 'home' });
-});
 
 watch(() => props.batchUuid, load, { immediate: true });
 onBeforeUnmount(() => {
@@ -583,6 +642,42 @@ onBeforeUnmount(() => {
                         </div>
                     </template>
                 </Column>
+                <Column header="Fotos">
+                    <template #body="{ data }">
+                        <div class="flex flex-col gap-2 items-start">
+                            <div class="flex flex-wrap items-center gap-2 max-w-64">
+                                <div v-for="(photoUuid, index) in data.photoUuids" :key="photoUuid" class="relative">
+                                    <PhotoThumb :photoUuid="photoUuid" :alt="`Foto ${index + 1} de ${data.materialCode} separado`" />
+                                    <Button
+                                        v-if="data.photoEditable"
+                                        icon="pi pi-times"
+                                        severity="danger"
+                                        rounded
+                                        class="!absolute -top-2 -right-2 !w-6 !h-6 !p-0"
+                                        :aria-label="`Excluir a foto ${index + 1} de ${data.materialCode}`"
+                                        v-tooltip.top="'Excluir foto'"
+                                        :loading="removingPhotoUuid === photoUuid"
+                                        :disabled="photoBusy && removingPhotoUuid !== photoUuid"
+                                        @click="confirmRemoveMaterialPhoto(data, photoUuid)"
+                                    />
+                                </div>
+                                <PhotoButton
+                                    v-if="data.photoEditable"
+                                    :label="data.photoUuids.length ? 'Adicionar' : 'Foto'"
+                                    size="small"
+                                    :severity="data.needsPhoto ? undefined : 'secondary'"
+                                    :outlined="!data.needsPhoto"
+                                    :ariaLabel="`${data.photoUuids.length ? 'Adicionar outra foto' : 'Tirar foto'} de ${data.materialCode}`"
+                                    :loading="photoMaterialUuid === data.materialUuid"
+                                    :disabled="photoBusy && photoMaterialUuid !== data.materialUuid"
+                                    @selected="sendMaterialPhoto(data, $event)"
+                                />
+                                <span v-else-if="!data.photoUuids.length" class="text-muted-color">—</span>
+                            </div>
+                            <Tag v-if="data.needsPhoto" value="Falta a foto" icon="pi pi-camera" severity="warn" />
+                        </div>
+                    </template>
+                </Column>
             </DataTable>
         </div>
 
@@ -679,12 +774,23 @@ onBeforeUnmount(() => {
                 <small v-if="finishSubmitted && !inspectorName" class="text-red-500">Informe o nome do inspetor do cliente</small>
             </div>
 
-            <div v-if="finishForm.customerInspection && canOfferCustomerCheck" class="flex flex-col gap-1">
-                <div class="flex items-center justify-between gap-4">
-                    <label for="finish-customer-check" class="font-medium">Cliente vai fazer a conferência</label>
-                    <ToggleSwitch inputId="finish-customer-check" v-model="finishForm.customerCheck" />
+            <div v-if="finishForm.customerInspection" class="flex flex-col gap-2">
+                <span class="font-medium">Documento do inspetor</span>
+                <div class="flex items-center gap-3">
+                    <PhotoThumb v-if="inspectorPhotoUuid" :photoUuid="inspectorPhotoUuid" alt="Foto do documento do inspetor do cliente" sizeClass="w-16 h-16" />
+                    <PhotoButton
+                        :label="inspectorPhotoUuid ? 'Trocar foto' : 'Tirar foto do documento'"
+                        size="small"
+                        :severity="inspectorPhotoUuid ? 'secondary' : undefined"
+                        :outlined="Boolean(inspectorPhotoUuid)"
+                        :loading="inspectorPhotoSending"
+                        :disabled="finishing"
+                        @selected="sendInspectorPhoto"
+                    />
                 </div>
-                <small class="text-muted-color">O inspetor confere pelo celular, lendo um QR Code, no lugar do conferente{{ multiple ? ', todas as remessas do grupo' : '' }}.</small>
+                <small v-if="inspectorPhotoError" class="text-red-500">{{ inspectorPhotoError }}</small>
+                <small v-else-if="finishSubmitted && !inspectorPhotoUuid" class="text-red-500">Tire a foto do documento do inspetor do cliente</small>
+                <small v-else class="text-muted-color">Documento com foto (RG ou CNH) de quem acompanhou.</small>
             </div>
 
             <div class="flex flex-col gap-2 sm:w-1/2">
@@ -697,9 +803,7 @@ onBeforeUnmount(() => {
 
         <template #footer>
             <Button label="Cancelar" severity="secondary" text :disabled="finishing" @click="finishVisible = false" />
-            <Button type="submit" form="finish-form" label="Concluir" icon="pi pi-check" :loading="finishing" />
+            <Button type="submit" form="finish-form" label="Concluir" icon="pi pi-check" :loading="finishing" :disabled="inspectorPhotoSending" />
         </template>
     </Dialog>
-
-    <CustomerCheckQrDialog v-model:visible="qrVisible" :link="customerCheckLink" />
 </template>

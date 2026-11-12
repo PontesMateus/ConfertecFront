@@ -112,6 +112,24 @@ export async function publicRequest(method, path, body, headers = {}) {
     return data;
 }
 
+/** GETs a file (like a photo) with the session's token, refreshing it once on a 401. Returns a Blob. */
+async function requestBlob(path) {
+    const fetchFile = async () => {
+        try {
+            return await fetch(`${BASE_URL}${path}`, { headers: session.state.accessToken ? { Authorization: `Bearer ${session.state.accessToken}` } : {} });
+        } catch {
+            throw new ApiError('Não foi possível conectar ao servidor', 0);
+        }
+    };
+    let response = await fetchFile();
+    if (response.status === 401 && session.state.refreshToken && (await refreshTokens())) response = await fetchFile();
+    if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new ApiError(data?.message ?? 'Erro inesperado', response.status);
+    }
+    return response.blob();
+}
+
 export const http = {
     get: (path) => request('GET', path),
     post: (path, body) => request('POST', path, body ?? {}),
@@ -119,5 +137,7 @@ export const http = {
     put: (path, body) => request('PUT', path, body ?? {}),
     delete: (path) => request('DELETE', path),
     /** POSTs the file itself as the body */
-    upload: (path, file) => request('POST', path, file)
+    upload: (path, file) => request('POST', path, file),
+    /** A file, as a Blob */
+    getBlob: (path) => requestBlob(path)
 };

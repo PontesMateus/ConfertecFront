@@ -10,6 +10,7 @@ import { useToast } from 'primevue/usetoast';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import CustomerCheckQrDialog from '@/views/customer-check/CustomerCheckQrDialog.vue';
+import PhotoThumb from '@/views/photos/PhotoThumb.vue';
 import AssignUserDialog from './AssignUserDialog.vue';
 import PickingBatchAddShipmentDialog from './PickingBatchAddShipmentDialog.vue';
 
@@ -36,6 +37,10 @@ const qrVisible = ref(false);
 const customerLink = ref(null);
 const regenerating = ref(false);
 const canceling = ref(false);
+const releaseVisible = ref(false);
+const releasing = ref(false);
+const releaseError = ref('');
+const releaseName = ref('');
 
 const title = computed(() => batch.value?.pickings.map((picking) => shipmentLabel(picking.shipment)).join(', '));
 const openCheck = computed(() => checks.value.find((check) => check.status === 'open') ?? null);
@@ -47,7 +52,40 @@ const approved = computed(() => batch.value?.pickings.every((picking) => picking
 const customerCheck = computed(() => (openCheck.value?.byCustomer ? openCheck.value : null));
 // A customer check stays with the customer: changing the checker meanwhile needs no justification
 const assignStarted = computed(() => (assignRole.value === 'PICKER' ? batch.value?.started : Boolean(openCheck.value && !customerCheck.value)));
+/**
+ * Every picking finished, no check open and one customer: the customer's inspector can check instead of the checker
+ * (the API checks it too)
+ */
+const canReleaseCustomerCheck = computed(() => {
+    const pickings = batch.value?.pickings ?? [];
+    const customers = new Set(pickings.map((picking) => picking.shipment.customer?.trim() || null));
+    return pickings.length > 0 && pickings.every((picking) => picking.status === 'Concluída') && !openCheck.value && customers.size === 1 && !customers.has(null);
+});
 const linkExpired = computed(() => customerCheck.value && new Date(customerCheck.value.customerLink.expiresAt) < new Date());
+
+/** Photos of the materials picked, for the whole batch: one or more per material, each material's oldest first */
+const materialPhotos = computed(() => {
+    const byMaterial = new Map();
+    for (const item of batch.value?.pickings.flatMap((picking) => picking.items) ?? []) {
+        if (item.photoUuids.length && !byMaterial.has(item.materialUuid)) byMaterial.set(item.materialUuid, item);
+    }
+    return [...byMaterial.values()]
+        .sort((a, b) => a.materialDescription.localeCompare(b.materialDescription, 'pt-BR'))
+        .flatMap((item) => item.photoUuids.map((photoUuid, index) => ({ ...item, photoUuid, photoNumber: index + 1, photoCount: item.photoUuids.length })));
+});
+/** ID documents of the customer's inspectors: who followed each picking, and who checked through the QR Code */
+const documentPhotos = computed(() => [
+    ...(batch.value?.pickings ?? [])
+        .filter((picking) => picking.customerInspectorPhotoUuid)
+        .map((picking) => ({ photoUuid: picking.customerInspectorPhotoUuid, name: picking.customerInspectorName, context: `Separação da remessa ${shipmentLabel(picking.shipment)}` })),
+    ...checks.value
+        .filter((check) => check.customerInspectorPhotoUuid)
+        .map((check) =>
+            check.byCustomer
+                ? { photoUuid: check.customerInspectorPhotoUuid, name: check.userName, context: 'Conferência pelo cliente' }
+                : { photoUuid: check.customerInspectorPhotoUuid, name: check.customerInspectorName, context: `Conferência de ${check.userName}` }
+        )
+]);
 
 const CHECK_STATUS = {
     open: { label: 'Em andamento', severity: 'info' },
@@ -107,8 +145,13 @@ function openAssign(role) {
     assignVisible.value = true;
 }
 
-function onAssigned(value) {
+function onAssigned(value, { swapped } = {}) {
     batch.value = value;
+    if (swapped) {
+        toast.add({ severity: 'success', summary: 'Funções trocadas', detail: `Separador: ${value.userName} · Conferente: ${value.checker.name}`, life: 4000 });
+        load({ silent: true });
+        return;
+    }
     const name = assignRole.value === 'PICKER' ? value.userName : value.checker.name;
     toast.add({ severity: 'success', summary: assignRole.value === 'PICKER' ? 'Separador alterado' : 'Conferente atribuído', detail: name, life: 4000 });
     load({ silent: true });
@@ -148,6 +191,28 @@ async function remove(picking, label) {
         toast.add({ severity: 'error', summary: 'Não foi possível retirar', detail: error.message, life: 5000 });
     } finally {
         removingUuid.value = null;
+    }
+}
+
+function openRelease() {
+    // Pre-filled with whoever followed the picking, when someone did; the inspector confirms it when opening the link
+    releaseName.value = [...(batch.value?.pickings ?? [])].reverse().find((picking) => picking.customerInspectorName)?.customerInspectorName ?? '';
+    releaseError.value = '';
+    releaseVisible.value = true;
+}
+
+async function releaseCustomerCheck() {
+    releasing.value = true;
+    releaseError.value = '';
+    try {
+        customerLink.value = await PickingBatchService.releaseCustomerCheck(props.batchUuid, releaseName.value.trim());
+        releaseVisible.value = false;
+        qrVisible.value = true;
+        load({ silent: true });
+    } catch (error) {
+        releaseError.value = error.message;
+    } finally {
+        releasing.value = false;
     }
 }
 
@@ -259,6 +324,13 @@ watch(
                 </div>
             </div>
 
+            <Message v-if="canReleaseCustomerCheck" severity="secondary" class="mt-4">
+                <div class="flex flex-wrap items-center justify-between gap-3 w-full">
+                    <span class="text-sm">Separação concluída. O inspetor do cliente pode conferir no lugar do conferente, pelo celular, lendo um QR Code.</span>
+                    <Button label="Conferência pelo cliente" icon="pi pi-qrcode" size="small" @click="openRelease" />
+                </div>
+            </Message>
+
             <Message v-if="customerCheck" :severity="linkExpired ? 'warn' : 'info'" class="mt-4">
                 <div class="flex flex-wrap items-center justify-between gap-3 w-full">
                     <div class="flex flex-col gap-1">
@@ -320,6 +392,36 @@ watch(
         </div>
 
         <div v-if="batch" class="card mb-0">
+            <h2 class="text-xl font-semibold m-0 mb-4">Fotos</h2>
+            <div v-if="!materialPhotos.length && !documentPhotos.length" class="py-2 text-muted-color">Nenhuma foto enviada.</div>
+            <div v-if="materialPhotos.length" class="flex flex-col gap-3">
+                <h3 class="text-base font-medium m-0">Materiais separados</h3>
+                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+                    <figure v-for="item in materialPhotos" :key="item.photoUuid" class="m-0 flex flex-col gap-1">
+                        <PhotoThumb :photoUuid="item.photoUuid" :alt="`Foto ${item.photoNumber} de ${item.materialCode} separado`" sizeClass="w-full aspect-square" />
+                        <figcaption class="text-sm">
+                            <span class="font-medium">{{ item.materialCode }}</span>
+                            <span v-if="item.photoCount > 1" class="text-xs text-muted-color"> · {{ item.photoNumber }}/{{ item.photoCount }}</span>
+                            <span class="block text-xs text-muted-color">{{ item.materialDescription }}</span>
+                        </figcaption>
+                    </figure>
+                </div>
+            </div>
+            <div v-if="documentPhotos.length" class="flex flex-col gap-3" :class="{ 'mt-6': materialPhotos.length }">
+                <h3 class="text-base font-medium m-0">Documentos do inspetor do cliente</h3>
+                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+                    <figure v-for="photo in documentPhotos" :key="photo.photoUuid" class="m-0 flex flex-col gap-1">
+                        <PhotoThumb :photoUuid="photo.photoUuid" :alt="`Documento de ${photo.name}`" sizeClass="w-full aspect-square" />
+                        <figcaption class="text-sm">
+                            <span class="font-medium">{{ photo.name }}</span>
+                            <span class="block text-xs text-muted-color">{{ photo.context }}</span>
+                        </figcaption>
+                    </figure>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="batch" class="card mb-0">
             <h2 class="text-xl font-semibold m-0 mb-4">Histórico de atribuições</h2>
             <DataTable :value="[...batch.assignments].reverse()" stripedRows>
                 <template #empty>
@@ -349,5 +451,23 @@ watch(
         <AssignUserDialog v-model:visible="assignVisible" :batch="batch" :role="assignRole" :users="users" :started="assignStarted" @saved="onAssigned" />
         <PickingBatchAddShipmentDialog v-model:visible="addVisible" :batch="batch" @added="onShipmentAdded" />
         <CustomerCheckQrDialog v-model:visible="qrVisible" :link="customerLink" />
+
+        <Dialog v-model:visible="releaseVisible" header="Conferência pelo cliente" modal :style="{ width: '30rem' }" :breakpoints="{ '575px': '95vw' }">
+            <form id="release-form" class="flex flex-col gap-4" @submit.prevent="releaseCustomerCheck">
+                <p class="m-0 text-muted-color">
+                    O inspetor do cliente confere {{ batch?.pickings.length > 1 ? 'todas as remessas do grupo' : 'a remessa' }} no lugar do conferente, vendo as quantidades esperadas. A conferência só termina quando todas as contagens baterem.
+                </p>
+                <div class="flex flex-col gap-2">
+                    <label for="release-inspector" class="font-medium">Inspetor do cliente <span class="text-muted-color font-normal">(opcional)</span></label>
+                    <InputText id="release-inspector" v-model="releaseName" maxlength="255" placeholder="Nome de quem vai conferir" fluid />
+                    <small class="text-muted-color">O inspetor confirma o nome ao abrir o link.</small>
+                </div>
+                <Message v-if="releaseError" severity="error" size="small" variant="simple">{{ releaseError }}</Message>
+            </form>
+            <template #footer>
+                <Button label="Cancelar" severity="secondary" text :disabled="releasing" @click="releaseVisible = false" />
+                <Button type="submit" form="release-form" label="Gerar QR Code" icon="pi pi-qrcode" :loading="releasing" />
+            </template>
+        </Dialog>
     </div>
 </template>

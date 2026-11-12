@@ -13,5 +13,10 @@ export const PickingBatchService = {
     /** The justification is required once the picking started */
     assignPicker: (batchUuid, userUuid, justification) => http.put(`/picking-batches/${batchUuid}/picker`, { userUuid, justification }),
     /** The justification is required while a check is open */
-    assignChecker: (batchUuid, userUuid, justification) => http.put(`/picking-batches/${batchUuid}/checker`, { userUuid, justification })
+    assignChecker: (batchUuid, userUuid, justification) => http.put(`/picking-batches/${batchUuid}/checker`, { userUuid, justification }),
+    /**
+     * Every picking finished, one customer: the customer's inspector checks instead of the checker, through a QR Code.
+     * Returns `{ checkUuid, token, expiresAt }`, the only time the token is given out
+     */
+    releaseCustomerCheck: (batchUuid, inspectorName) => http.post(`/picking-batches/${batchUuid}/customer-check`, { inspectorName: inspectorName || undefined })
 };

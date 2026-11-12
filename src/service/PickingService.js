@@ -12,9 +12,18 @@ export const PickingService = {
     /** Sets (not adds) the quantity picked so far */
     setItemQty: (pickingUuid, lineUuid, qty) => http.put(`/pickings/${pickingUuid}/items/${lineUuid}`, { qty }),
     /**
-     * @param {{ customerInspection: boolean, customerInspectorName?: string, companyPersonQty: number, customerCheck?: boolean }} details
-     *   the name is required with an inspection; `customerCheck` (last picking of a one-customer batch) hands the check to
-     *   the customer's inspector, and the response then has `customerCheckLink` ({ checkUuid, token, expiresAt })
+     * Adds a photo of a material picked: a material takes one or more, shared by every shipment of the batch; a picked
+     * line only counts as picked with at least one. Returns `{ materialUuid, photoUuid, items }`: the material's lines in
+     * the batch, with `pickingUuid` and every photo (`photoUuids`)
+     */
+    addMaterialPhoto: (batchUuid, materialUuid, photo) => http.post(`/picking-batches/${batchUuid}/materials/${materialUuid}/photos`, photo),
+    /** Removes one of the material's photos; returns `{ materialUuid, items }`, as on adding */
+    removeMaterialPhoto: (batchUuid, materialUuid, photoUuid) => http.delete(`/picking-batches/${batchUuid}/materials/${materialUuid}/photos/${photoUuid}`),
+    /** The photo of the customer's inspector's ID document, required to finish with an inspection; returns `{ photoUuid }` */
+    setInspectorPhoto: (pickingUuid, photo) => http.put(`/pickings/${pickingUuid}/customer-inspector-photo`, photo),
+    /**
+     * @param {{ customerInspection: boolean, customerInspectorName?: string, companyPersonQty: number }} details
+     *   the name is required with an inspection
      */
     finish: (pickingUuid, details) => http.post(`/pickings/${pickingUuid}/finish`, details),
     listIssueTypes: () => http.get('/picking-issue-types'),

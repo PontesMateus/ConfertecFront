@@ -30,13 +30,23 @@ const header = computed(() => {
 });
 
 /**
+ * Whoever has the other role now, offered for a swap: only with both roles filled and before the picking starts,
+ * while neither has worked on the batch.
+ */
+const swapUuid = computed(() => {
+    if (!props.batch?.checker || props.batch.started) return null;
+    return isPicker.value ? props.batch.checker.uuid : props.batch.userUuid;
+});
+const swapping = computed(() => Boolean(userUuid.value) && userUuid.value === swapUuid.value);
+
+/**
  * The check is blind: anyone ever assigned to the other role of this batch is left out (the API refuses them too),
- * and so is whoever has this role now.
+ * and so is whoever has this role now. The swap candidate is the exception.
  */
 const options = computed(() => {
     const otherRole = isPicker.value ? 'CHECKER' : 'PICKER';
     const blocked = new Set((props.batch?.assignments ?? []).filter((assignment) => assignment.role === otherRole).map((assignment) => assignment.userUuid));
-    return props.users.filter((user) => user.uuid !== currentUuid.value && !blocked.has(user.uuid));
+    return props.users.filter((user) => user.uuid !== currentUuid.value && (user.uuid === swapUuid.value || !blocked.has(user.uuid))).map((user) => (user.uuid === swapUuid.value ? { ...user, name: `${user.name} (trocar de função)` } : user));
 });
 
 watch(visible, (open) => {
@@ -61,7 +71,7 @@ async function save() {
     try {
         const assign = isPicker.value ? PickingBatchService.assignPicker : PickingBatchService.assignChecker;
         const saved = await assign(props.batch.uuid, userUuid.value, justification.value.trim() || undefined);
-        emit('saved', saved);
+        emit('saved', saved, { swapped: swapping.value });
         visible.value = false;
     } catch (error) {
         errorMessage.value = error.message;
@@ -86,8 +96,14 @@ async function save() {
                 <label for="assign-user" class="font-medium">{{ isPicker ? 'Novo separador' : 'Conferente' }}</label>
                 <Select inputId="assign-user" v-model="userUuid" :options="options" optionLabel="name" optionValue="uuid" placeholder="Selecione" filter :invalid="submitted && !!errors.userUuid" fluid />
                 <small v-if="submitted && errors.userUuid" class="text-red-500">{{ errors.userUuid }}</small>
-                <small v-else class="text-muted-color">Quem já {{ isPicker ? 'foi conferente' : 'foi separador' }} deste grupo não aparece: a conferência é cega.</small>
+                <small v-else class="text-muted-color">
+                    Quem já {{ isPicker ? 'foi conferente' : 'foi separador' }} deste grupo não aparece: a conferência é cega.<template v-if="swapUuid"> Até a separação começar, dá para trocar as funções do separador e do conferente.</template>
+                </small>
             </div>
+
+            <Message v-if="swapping" severity="info" size="small">
+                {{ isPicker ? `${batch.checker.name} passa a separar e ${batch.userName} passa a conferir.` : `${batch.userName} passa a conferir e ${batch.checker.name} passa a separar.` }}
+            </Message>
 
             <div class="flex flex-col gap-2">
                 <label for="assign-justification" class="font-medium"> Justificativa <span v-if="!started" class="text-muted-color font-normal">(opcional)</span> </label>
