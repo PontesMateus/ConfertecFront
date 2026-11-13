@@ -1,4 +1,8 @@
-/** Longest side of a photo sent to the API: enough to read a label or a document, light on mobile data */
+/**
+ * Longest side of a photo sent to the API: enough to read a label or a document, light on mobile data. The API
+ * converts every upload to the same standard anyway (PHOTO in ConfertecApi/src/shared/constants/photo.js); keep these
+ * in step with it, so the API never has to shrink the photo further.
+ */
 const MAX_SIDE = 1600;
 const JPEG_QUALITY = 0.8;
 
