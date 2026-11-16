@@ -2,7 +2,7 @@ import { onMounted, onUnmounted, readonly, ref, watch } from 'vue';
 import { getFreshAccessToken } from './http';
 import { session } from './session';
 
-const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api';
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 const MAX_RETRY_DELAY_MS = 30000;
 const CLOSE_TOKEN_EXPIRED = 4001;
 /** Moving from one screen to another unsubscribes then subscribes again: keep the socket meanwhile */
