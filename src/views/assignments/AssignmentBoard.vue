@@ -24,6 +24,13 @@ const loadError = ref('');
 const selected = ref([]);
 const formVisible = ref(false);
 
+/** Batches checked and approved, one page at a time (latest first) */
+const completed = ref([]);
+const completedTotal = ref(0);
+const completedPage = ref({ first: 0, rows: 10 });
+const completedLoading = ref(true);
+const completedError = ref('');
+
 function label(shipment) {
     return `${shipment.record}-${shipment.recordReceipt}`;
 }
@@ -70,9 +77,39 @@ async function load({ silent = false } = {}) {
     }
 }
 
-// Shipments imported or assigned, pickings started or finished, checks started or finished
+let completedSeq = 0;
+
+async function loadCompleted({ silent = false } = {}) {
+    const seq = ++completedSeq;
+    if (!silent) {
+        completedLoading.value = true;
+        completedError.value = '';
+    }
+    try {
+        const { first, rows } = completedPage.value;
+        const result = await PickingBatchService.listCompleted({ offset: first, limit: rows });
+        if (seq !== completedSeq) return;
+        completed.value = result.batches;
+        completedTotal.value = result.total;
+        completedError.value = '';
+    } catch (error) {
+        if (!silent && seq === completedSeq) completedError.value = error.message;
+    } finally {
+        if (seq === completedSeq) completedLoading.value = false;
+    }
+}
+
+function onCompletedPage(event) {
+    completedPage.value = { first: event.first, rows: event.rows };
+    loadCompleted();
+}
+
+// Shipments imported or assigned, pickings started or finished, checks started or finished (an approval completes a batch)
 useRealtimeRefresh('pickingQueue.changed', () => load({ silent: true }));
-useRealtimeRefresh('checkQueue.changed', () => load({ silent: true }));
+useRealtimeRefresh('checkQueue.changed', () => {
+    load({ silent: true });
+    loadCompleted({ silent: true });
+});
 
 function onCreated(batch) {
     selected.value = [];
@@ -84,7 +121,10 @@ function openBatch(batch) {
     router.push({ name: 'assignment', params: { batchUuid: batch.uuid } });
 }
 
-onMounted(load);
+onMounted(() => {
+    load();
+    loadCompleted();
+});
 </script>
 
 <template>
@@ -173,6 +213,75 @@ onMounted(load);
                         <span v-if="data.checker">{{ data.checker.name }}</span>
                         <Tag v-else value="Sem conferente" icon="pi pi-exclamation-triangle" severity="warn" />
                     </template>
+                </Column>
+                <Column header="" class="w-0 whitespace-nowrap">
+                    <template #body="{ data }">
+                        <div class="flex justify-end">
+                            <Button label="Abrir" icon="pi pi-arrow-right" iconPos="right" size="small" severity="secondary" outlined @click="openBatch(data)" />
+                        </div>
+                    </template>
+                </Column>
+            </DataTable>
+        </div>
+
+        <div class="card mb-0">
+            <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+                <div>
+                    <h2 class="text-2xl font-semibold m-0">Grupos concluídos</h2>
+                    <p class="text-muted-color m-0 mt-1">Grupos conferidos e aprovados, dos mais recentes aos mais antigos.</p>
+                </div>
+                <Button label="Atualizar" icon="pi pi-refresh" severity="secondary" outlined :loading="completedLoading" @click="loadCompleted()" />
+            </div>
+
+            <Message v-if="completedError" severity="error" class="mb-4">
+                <div class="flex flex-wrap items-center gap-3">
+                    <span>{{ completedError }}</span>
+                    <Button label="Tentar novamente" size="small" severity="secondary" @click="loadCompleted()" />
+                </div>
+            </Message>
+
+            <DataTable
+                :value="completed"
+                :loading="completedLoading"
+                dataKey="uuid"
+                lazy
+                paginator
+                :first="completedPage.first"
+                :rows="completedPage.rows"
+                :totalRecords="completedTotal"
+                :rowsPerPageOptions="[10, 20, 50, 100]"
+                stripedRows
+                @page="onCompletedPage"
+            >
+                <template #empty>
+                    <div class="py-6 text-center text-muted-color">Nenhum grupo concluído.</div>
+                </template>
+
+                <Column header="Remessas" class="whitespace-nowrap">
+                    <template #body="{ data }">
+                        <div v-for="shipment in data.shipments" :key="shipment.uuid">
+                            <span class="font-medium">{{ label(shipment) }}</span>
+                            <span class="text-xs text-muted-color ml-2">saída {{ formatDateTime(shipment.shippingAt) }}</span>
+                        </div>
+                    </template>
+                </Column>
+                <Column header="Cliente">
+                    <template #body="{ data }">{{ [...new Set(data.shipments.map((shipment) => shipment.customer).filter(Boolean))].join(', ') || '—' }}</template>
+                </Column>
+                <Column header="Separação" class="whitespace-nowrap">
+                    <template #body="{ data }">{{ data.userName }}</template>
+                </Column>
+                <Column header="Conferência" class="whitespace-nowrap">
+                    <template #body="{ data }">
+                        <template v-if="data.completedBy">
+                            <span>{{ data.completedBy.name }}</span>
+                            <Tag v-if="data.completedBy.byCustomer" value="Inspetor do cliente" icon="pi pi-qrcode" severity="secondary" class="ml-2" />
+                        </template>
+                        <span v-else>{{ data.checker?.name ?? '—' }}</span>
+                    </template>
+                </Column>
+                <Column header="Aprovada em" class="whitespace-nowrap">
+                    <template #body="{ data }">{{ data.completedAt ? formatDateTime(data.completedAt) : '—' }}</template>
                 </Column>
                 <Column header="" class="w-0 whitespace-nowrap">
                     <template #body="{ data }">

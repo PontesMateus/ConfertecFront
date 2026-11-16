@@ -10,6 +10,7 @@ import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import PickingIssueList from '@/views/issues/PickingIssueList.vue';
 import PhotoThumb from '@/views/photos/PhotoThumb.vue';
+import WorkTimesTable from '@/views/assignments/WorkTimesTable.vue';
 import ShipmentFormDialog from './ShipmentFormDialog.vue';
 
 const props = defineProps({
@@ -204,9 +205,11 @@ watch(
             </Message>
         </div>
 
+        <WorkTimesTable v-if="shipment" :pickings="shipment.picking ? [shipment.picking] : []" :checks="checks" />
+
         <div v-if="shipment" class="card mb-0">
             <h2 class="text-xl font-semibold m-0 mb-4">Itens da revisão atual</h2>
-            <DataTable :value="shipment.items" dataKey="lineUuid" stripedRows size="small">
+            <DataTable :value="shipment.items" dataKey="lineUuid" sortField="materialDescription" :sortOrder="1" stripedRows size="small">
                 <template #empty>
                     <div class="py-6 text-center text-muted-color">Esta revisão não tem itens.</div>
                 </template>

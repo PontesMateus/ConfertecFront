@@ -4,6 +4,8 @@ import { http } from './http';
 export const PickingBatchService = {
     /** Batches with work left, newest first, each with its shipments and their picking progress */
     list: () => http.get('/picking-batches'),
+    /** Batches checked and approved, latest first, one page: `{ total, batches }` */
+    listCompleted: ({ offset = 0, limit = 20 } = {}) => http.get(`/picking-batches/completed?offset=${offset}&limit=${limit}`),
     get: (batchUuid) => http.get(`/picking-batches/${batchUuid}`),
     /** @param {{ shipmentUuids: string[], pickerUuid: string, checkerUuid?: string }} batch */
     create: (batch) => http.post('/picking-batches', batch),

@@ -11,6 +11,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import CustomerCheckQrDialog from '@/views/customer-check/CustomerCheckQrDialog.vue';
 import PhotoThumb from '@/views/photos/PhotoThumb.vue';
+import WorkTimesTable from './WorkTimesTable.vue';
 import AssignUserDialog from './AssignUserDialog.vue';
 import PickingBatchAddShipmentDialog from './PickingBatchAddShipmentDialog.vue';
 
@@ -63,29 +64,31 @@ const canReleaseCustomerCheck = computed(() => {
 });
 const linkExpired = computed(() => customerCheck.value && new Date(customerCheck.value.customerLink.expiresAt) < new Date());
 
-/** Photos of the materials picked, for the whole batch: one or more per material, each material's oldest first */
-const materialPhotos = computed(() => {
+/**
+ * Materials of the batch's current revisions, one row per material: quantity summed over every shipment, and the
+ * material's photos (shared by every shipment of the batch, oldest first)
+ */
+const batchItems = computed(() => {
     const byMaterial = new Map();
     for (const item of batch.value?.pickings.flatMap((picking) => picking.items) ?? []) {
-        if (item.photoUuids.length && !byMaterial.has(item.materialUuid)) byMaterial.set(item.materialUuid, item);
+        const row = byMaterial.get(item.materialUuid);
+        if (row) {
+            row.qty = Math.round((row.qty + item.requiredQty) * 1000) / 1000;
+            if (item.replacedMaterialCode && !row.replacedMaterialCodes.includes(item.replacedMaterialCode)) row.replacedMaterialCodes.push(item.replacedMaterialCode);
+        } else {
+            byMaterial.set(item.materialUuid, {
+                materialUuid: item.materialUuid,
+                materialCode: item.materialCode,
+                materialDescription: item.materialDescription,
+                qty: item.requiredQty,
+                replacedMaterialCodes: item.replacedMaterialCode ? [item.replacedMaterialCode] : [],
+                photoUuids: item.photoUuids
+            });
+        }
     }
-    return [...byMaterial.values()]
-        .sort((a, b) => a.materialDescription.localeCompare(b.materialDescription, 'pt-BR'))
-        .flatMap((item) => item.photoUuids.map((photoUuid, index) => ({ ...item, photoUuid, photoNumber: index + 1, photoCount: item.photoUuids.length })));
+    return [...byMaterial.values()];
 });
-/** ID documents of the customer's inspectors: who followed each picking, and who checked through the QR Code */
-const documentPhotos = computed(() => [
-    ...(batch.value?.pickings ?? [])
-        .filter((picking) => picking.customerInspectorPhotoUuid)
-        .map((picking) => ({ photoUuid: picking.customerInspectorPhotoUuid, name: picking.customerInspectorName, context: `Separação da remessa ${shipmentLabel(picking.shipment)}` })),
-    ...checks.value
-        .filter((check) => check.customerInspectorPhotoUuid)
-        .map((check) =>
-            check.byCustomer
-                ? { photoUuid: check.customerInspectorPhotoUuid, name: check.userName, context: 'Conferência pelo cliente' }
-                : { photoUuid: check.customerInspectorPhotoUuid, name: check.customerInspectorName, context: `Conferência de ${check.userName}` }
-        )
-]);
+const qtyFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 });
 
 const CHECK_STATUS = {
     open: { label: 'Em andamento', severity: 'info' },
@@ -391,34 +394,33 @@ watch(
             </DataTable>
         </div>
 
+        <WorkTimesTable v-if="batch" :pickings="batch.pickings.map((picking) => ({ ...picking, label: shipmentLabel(picking.shipment) }))" :checks="checks" />
+
         <div v-if="batch" class="card mb-0">
-            <h2 class="text-xl font-semibold m-0 mb-4">Fotos</h2>
-            <div v-if="!materialPhotos.length && !documentPhotos.length" class="py-2 text-muted-color">Nenhuma foto enviada.</div>
-            <div v-if="materialPhotos.length" class="flex flex-col gap-3">
-                <h3 class="text-base font-medium m-0">Materiais separados</h3>
-                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-                    <figure v-for="item in materialPhotos" :key="item.photoUuid" class="m-0 flex flex-col gap-1">
-                        <PhotoThumb :photoUuid="item.photoUuid" :alt="`Foto ${item.photoNumber} de ${item.materialCode} separado`" sizeClass="w-full aspect-square" />
-                        <figcaption class="text-sm">
-                            <span class="font-medium">{{ item.materialCode }}</span>
-                            <span v-if="item.photoCount > 1" class="text-xs text-muted-color"> · {{ item.photoNumber }}/{{ item.photoCount }}</span>
-                            <span class="block text-xs text-muted-color">{{ item.materialDescription }}</span>
-                        </figcaption>
-                    </figure>
-                </div>
-            </div>
-            <div v-if="documentPhotos.length" class="flex flex-col gap-3" :class="{ 'mt-6': materialPhotos.length }">
-                <h3 class="text-base font-medium m-0">Documentos do inspetor do cliente</h3>
-                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-                    <figure v-for="photo in documentPhotos" :key="photo.photoUuid" class="m-0 flex flex-col gap-1">
-                        <PhotoThumb :photoUuid="photo.photoUuid" :alt="`Documento de ${photo.name}`" sizeClass="w-full aspect-square" />
-                        <figcaption class="text-sm">
-                            <span class="font-medium">{{ photo.name }}</span>
-                            <span class="block text-xs text-muted-color">{{ photo.context }}</span>
-                        </figcaption>
-                    </figure>
-                </div>
-            </div>
+            <h2 class="text-xl font-semibold m-0 mb-4">Itens da revisão atual</h2>
+            <DataTable :value="batchItems" dataKey="materialUuid" sortField="materialDescription" :sortOrder="1" stripedRows size="small">
+                <template #empty>
+                    <div class="py-6 text-center text-muted-color">As remessas do grupo não têm itens.</div>
+                </template>
+                <Column field="materialCode" header="Código" sortable class="whitespace-nowrap">
+                    <template #body="{ data }">
+                        <span class="font-medium">{{ data.materialCode }}</span>
+                        <Tag v-for="code in data.replacedMaterialCodes" :key="code" :value="`Substitui ${code}`" icon="pi pi-arrow-right-arrow-left" severity="info" class="ml-2" />
+                    </template>
+                </Column>
+                <Column field="materialDescription" header="Descrição" sortable />
+                <Column field="qty" header="Quantidade" sortable class="text-right whitespace-nowrap">
+                    <template #body="{ data }">{{ qtyFormat.format(data.qty) }}</template>
+                </Column>
+                <Column v-if="batchItems.some((item) => item.photoUuids.length)" header="Fotos da separação">
+                    <template #body="{ data }">
+                        <div v-if="data.photoUuids.length" class="flex flex-wrap gap-2 max-w-64">
+                            <PhotoThumb v-for="(photoUuid, index) in data.photoUuids" :key="photoUuid" :photoUuid="photoUuid" :alt="`Foto ${index + 1} de ${data.materialCode} separado`" />
+                        </div>
+                        <span v-else class="text-muted-color">—</span>
+                    </template>
+                </Column>
+            </DataTable>
         </div>
 
         <div v-if="batch" class="card mb-0">
