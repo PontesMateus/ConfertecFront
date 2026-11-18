@@ -11,7 +11,7 @@ import { useToast } from 'primevue/usetoast';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import CustomerCheckQrDialog from '@/views/customer-check/CustomerCheckQrDialog.vue';
-import PhotoThumb from '@/views/photos/PhotoThumb.vue';
+import PhotoListButton from '@/views/photos/PhotoListButton.vue';
 import WorkTimesTable from './WorkTimesTable.vue';
 import AssignUserDialog from './AssignUserDialog.vue';
 import PickingBatchAddShipmentDialog from './PickingBatchAddShipmentDialog.vue';
@@ -424,9 +424,7 @@ watch(
                 </Column>
                 <Column v-if="batchItems.some((item) => item.photoUuids.length)" header="Fotos da separação">
                     <template #body="{ data }">
-                        <div v-if="data.photoUuids.length" class="flex flex-wrap gap-2 max-w-64">
-                            <PhotoThumb v-for="(photoUuid, index) in data.photoUuids" :key="photoUuid" :photoUuid="photoUuid" :alt="`Foto ${index + 1} de ${data.materialCode} separado`" />
-                        </div>
+                        <PhotoListButton v-if="data.photoUuids.length" :photoUuids="data.photoUuids" :title="`Fotos de ${data.materialCode} separado`" :altPrefix="`Foto de ${data.materialCode} separado`" />
                         <span v-else class="text-muted-color">—</span>
                     </template>
                 </Column>
