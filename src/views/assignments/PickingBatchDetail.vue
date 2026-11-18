@@ -1,5 +1,6 @@
 <script setup>
-import { PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
+import { ASSIGNMENT_ROLE } from '@/constants/pickingBatchAssignmentRole';
+import { PICKING_STATUS, PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
 import { CheckService } from '@/service/CheckService';
 import { PickingBatchService } from '@/service/PickingBatchService';
 import { UserService } from '@/service/UserService';
@@ -31,7 +32,7 @@ const users = ref([]);
 const loading = ref(true);
 const loadError = ref('');
 const assignVisible = ref(false);
-const assignRole = ref('PICKER');
+const assignRole = ref(ASSIGNMENT_ROLE.PICKER);
 const addVisible = ref(false);
 const removingUuid = ref(null);
 const qrVisible = ref(false);
@@ -47,12 +48,12 @@ const title = computed(() => batch.value?.pickings.map((picking) => shipmentLabe
 const openCheck = computed(() => checks.value.find((check) => check.status === 'open') ?? null);
 /** Once a check started, the batch keeps its shipments: a recount must cover the same ones */
 const hasCheck = computed(() => checks.value.length > 0);
-const pickingOpen = computed(() => batch.value?.pickings.some((picking) => picking.status === 'Pendente' || picking.status === 'Em andamento'));
-const approved = computed(() => batch.value?.pickings.every((picking) => picking.status === 'Conferida'));
+const pickingOpen = computed(() => batch.value?.pickings.some((picking) => [PICKING_STATUS.PENDING, PICKING_STATUS.IN_PROGRESS].includes(picking.statusId)));
+const approved = computed(() => batch.value?.pickings.every((picking) => picking.statusId === PICKING_STATUS.CHECKED));
 /** The customer's inspector is checking instead of the checker (through a QR Code) */
 const customerCheck = computed(() => (openCheck.value?.byCustomer ? openCheck.value : null));
 // A customer check stays with the customer: changing the checker meanwhile needs no justification
-const assignStarted = computed(() => (assignRole.value === 'PICKER' ? batch.value?.started : Boolean(openCheck.value && !customerCheck.value)));
+const assignStarted = computed(() => (assignRole.value === ASSIGNMENT_ROLE.PICKER ? batch.value?.started : Boolean(openCheck.value && !customerCheck.value)));
 /**
  * Every picking finished, no check open and one customer: the customer's inspector can check instead of the checker
  * (the API checks it too)
@@ -60,7 +61,7 @@ const assignStarted = computed(() => (assignRole.value === 'PICKER' ? batch.valu
 const canReleaseCustomerCheck = computed(() => {
     const pickings = batch.value?.pickings ?? [];
     const customers = new Set(pickings.map((picking) => picking.shipment.customer?.trim() || null));
-    return pickings.length > 0 && pickings.every((picking) => picking.status === 'Concluída') && !openCheck.value && customers.size === 1 && !customers.has(null);
+    return pickings.length > 0 && pickings.every((picking) => picking.statusId === PICKING_STATUS.DONE) && !openCheck.value && customers.size === 1 && !customers.has(null);
 });
 const linkExpired = computed(() => customerCheck.value && new Date(customerCheck.value.customerLink.expiresAt) < new Date());
 
@@ -155,8 +156,8 @@ function onAssigned(value, { swapped } = {}) {
         load({ silent: true });
         return;
     }
-    const name = assignRole.value === 'PICKER' ? value.userName : value.checker.name;
-    toast.add({ severity: 'success', summary: assignRole.value === 'PICKER' ? 'Separador alterado' : 'Conferente atribuído', detail: name, life: 4000 });
+    const name = assignRole.value === ASSIGNMENT_ROLE.PICKER ? value.userName : value.checker.name;
+    toast.add({ severity: 'success', summary: assignRole.value === ASSIGNMENT_ROLE.PICKER ? 'Separador alterado' : 'Conferente atribuído', detail: name, life: 4000 });
     load({ silent: true });
 }
 
@@ -167,7 +168,7 @@ function onShipmentAdded(value) {
 
 function confirmRemove(picking) {
     const label = shipmentLabel(picking.shipment);
-    const pending = picking.status === 'Pendente';
+    const pending = picking.statusId === PICKING_STATUS.PENDING;
     confirm.require({
         header: 'Retirar remessa do grupo',
         message: pending
@@ -300,7 +301,16 @@ watch(
                         <div class="font-medium text-lg">{{ batch.userName }}</div>
                         <div class="text-xs text-muted-color">{{ batch.started ? 'Separação iniciada' : 'Ainda não iniciou' }}</div>
                     </div>
-                    <Button label="Trocar" icon="pi pi-user-edit" size="small" severity="secondary" outlined :disabled="!pickingOpen" v-tooltip.bottom="pickingOpen ? null : 'A separação já foi concluída'" @click="openAssign('PICKER')" />
+                    <Button
+                        label="Trocar"
+                        icon="pi pi-user-edit"
+                        size="small"
+                        severity="secondary"
+                        outlined
+                        :disabled="!pickingOpen"
+                        v-tooltip.bottom="pickingOpen ? null : 'A separação já foi concluída'"
+                        @click="openAssign(ASSIGNMENT_ROLE.PICKER)"
+                    />
                 </div>
                 <div class="border border-surface rounded-border p-4 flex flex-wrap items-center justify-between gap-3">
                     <div>
@@ -322,7 +332,7 @@ watch(
                         :outlined="Boolean(batch.checker)"
                         :disabled="approved"
                         v-tooltip.bottom="approved ? 'A conferência já foi aprovada' : null"
-                        @click="openAssign('CHECKER')"
+                        @click="openAssign(ASSIGNMENT_ROLE.CHECKER)"
                     />
                 </div>
             </div>
@@ -369,7 +379,7 @@ watch(
                 <Column header="Separação" class="whitespace-nowrap">
                     <template #body="{ data }">
                         <div class="flex flex-col gap-1 min-w-36">
-                            <Tag :value="data.status" :severity="PICKING_STATUS_SEVERITY[data.status]" class="self-start" />
+                            <Tag :value="data.status" :severity="PICKING_STATUS_SEVERITY[data.statusId]" class="self-start" />
                             <ProgressBar :value="data.items.length ? Math.round((doneCount(data) / data.items.length) * 100) : 0" :showValue="false" class="h-1.5" />
                             <span class="text-xs text-muted-color">{{ doneCount(data) }} de {{ data.items.length }} itens completos</span>
                             <Tag v-if="openIssueCount(data)" :value="openIssueCount(data) === 1 ? '1 falta pendente' : `${openIssueCount(data)} faltas pendentes`" icon="pi pi-exclamation-triangle" severity="warn" class="self-start" />
@@ -434,7 +444,7 @@ watch(
                 </Column>
                 <Column header="Função" class="whitespace-nowrap">
                     <template #body="{ data }">
-                        <Tag :value="data.roleLabel" :severity="data.role === 'PICKER' ? 'info' : 'secondary'" />
+                        <Tag :value="data.roleLabel" :severity="data.roleId === ASSIGNMENT_ROLE.PICKER ? 'info' : 'secondary'" />
                     </template>
                 </Column>
                 <Column header="Responsável" field="userName" />

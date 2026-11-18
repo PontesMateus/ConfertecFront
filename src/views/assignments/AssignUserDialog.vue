@@ -1,4 +1,5 @@
 <script setup>
+import { ASSIGNMENT_ROLE } from '@/constants/pickingBatchAssignmentRole';
 import { PickingBatchService } from '@/service/PickingBatchService';
 import { computed, ref, watch } from 'vue';
 
@@ -6,8 +7,8 @@ const JUSTIFICATION_MAX_LENGTH = 1000;
 
 const props = defineProps({
     batch: { type: Object, default: null },
-    /** 'PICKER' or 'CHECKER' */
-    role: { type: String, required: true },
+    /** ASSIGNMENT_ROLE id */
+    role: { type: Number, required: true },
     /** Active Conferentes: { uuid, name, login } */
     users: { type: Array, required: true },
     /** The work of this role already started: the change needs a justification */
@@ -22,7 +23,7 @@ const submitted = ref(false);
 const saving = ref(false);
 const errorMessage = ref('');
 
-const isPicker = computed(() => props.role === 'PICKER');
+const isPicker = computed(() => props.role === ASSIGNMENT_ROLE.PICKER);
 const currentUuid = computed(() => (isPicker.value ? props.batch?.userUuid : props.batch?.checker?.uuid));
 const header = computed(() => {
     if (isPicker.value) return 'Trocar separador';
@@ -44,8 +45,8 @@ const swapping = computed(() => Boolean(userUuid.value) && userUuid.value === sw
  * and so is whoever has this role now. The swap candidate is the exception.
  */
 const options = computed(() => {
-    const otherRole = isPicker.value ? 'CHECKER' : 'PICKER';
-    const blocked = new Set((props.batch?.assignments ?? []).filter((assignment) => assignment.role === otherRole).map((assignment) => assignment.userUuid));
+    const otherRole = isPicker.value ? ASSIGNMENT_ROLE.CHECKER : ASSIGNMENT_ROLE.PICKER;
+    const blocked = new Set((props.batch?.assignments ?? []).filter((assignment) => assignment.roleId === otherRole).map((assignment) => assignment.userUuid));
     return props.users.filter((user) => user.uuid !== currentUuid.value && (user.uuid === swapUuid.value || !blocked.has(user.uuid))).map((user) => (user.uuid === swapUuid.value ? { ...user, name: `${user.name} (trocar de função)` } : user));
 });
 

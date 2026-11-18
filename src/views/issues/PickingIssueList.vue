@@ -1,4 +1,5 @@
 <script setup>
+import { PICKING_STATUS } from '@/constants/pickingStatus';
 import { PickingIssueService } from '@/service/PickingIssueService';
 import { useRealtimeRefresh } from '@/service/realtime';
 import { formatDateTime } from '@/utils/date';
@@ -177,7 +178,7 @@ watch(
             </Column>
             <Column header="" class="w-0 whitespace-nowrap">
                 <template #body="{ data }">
-                    <Button v-if="data.open" label="Resolver" icon="pi pi-check" size="small" :disabled="data.picking.status !== 'Em andamento'" @click="openResolve(data)" />
+                    <Button v-if="data.open" label="Resolver" icon="pi pi-check" size="small" :disabled="data.picking.statusId !== PICKING_STATUS.IN_PROGRESS" @click="openResolve(data)" />
                 </template>
             </Column>
         </DataTable>

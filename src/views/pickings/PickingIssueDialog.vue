@@ -16,7 +16,7 @@ const emit = defineEmits(['reported']);
 const visible = defineModel('visible', { type: Boolean, default: false });
 
 const issueTypes = ref([]);
-const form = reactive({ issueTypeUuid: null, qty: null, description: '' });
+const form = reactive({ issueTypeId: null, qty: null, description: '' });
 const submitted = ref(false);
 const saving = ref(false);
 const errorMessage = ref('');
@@ -25,7 +25,7 @@ const qtyFormat = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 3 });
 
 watch(visible, async (open) => {
     if (!open || !props.item) return;
-    form.issueTypeUuid = null;
+    form.issueTypeId = null;
     // Usually the whole rest is missing; the picker lowers it for a partial shortage
     form.qty = props.item.remainingQty;
     form.description = '';
@@ -41,20 +41,20 @@ watch(visible, async (open) => {
 });
 
 const errors = computed(() => ({
-    issueTypeUuid: !form.issueTypeUuid && 'Escolha o motivo',
+    issueTypeId: !form.issueTypeId && 'Escolha o motivo',
     qty: !(form.qty > 0) && 'Informe a quantidade em falta'
 }));
 
 async function save() {
     submitted.value = true;
     errorMessage.value = '';
-    if (errors.value.issueTypeUuid || errors.value.qty) return;
+    if (errors.value.issueTypeId || errors.value.qty) return;
 
     saving.value = true;
     try {
         const picking = await PickingService.reportIssue(props.pickingUuid, {
             lineUuid: props.item.lineUuid,
-            issueTypeUuid: form.issueTypeUuid,
+            issueTypeId: form.issueTypeId,
             qty: form.qty,
             description: form.description
         });
@@ -85,8 +85,8 @@ async function save() {
 
             <div class="flex flex-col gap-2">
                 <label for="issue-type" class="font-medium">Motivo</label>
-                <Select inputId="issue-type" v-model="form.issueTypeUuid" :options="issueTypes" optionLabel="description" optionValue="uuid" placeholder="Escolha o motivo" :invalid="submitted && !!errors.issueTypeUuid" fluid />
-                <small v-if="submitted && errors.issueTypeUuid" class="text-red-500">{{ errors.issueTypeUuid }}</small>
+                <Select inputId="issue-type" v-model="form.issueTypeId" :options="issueTypes" optionLabel="description" optionValue="id" placeholder="Escolha o motivo" :invalid="submitted && !!errors.issueTypeId" fluid />
+                <small v-if="submitted && errors.issueTypeId" class="text-red-500">{{ errors.issueTypeId }}</small>
             </div>
 
             <div class="flex flex-col gap-2">

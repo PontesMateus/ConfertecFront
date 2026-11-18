@@ -136,7 +136,7 @@ onMounted(load);
                 <template #body="{ data }">
                     <div v-for="shipment in data.shipments" :key="shipment.uuid" class="flex flex-col gap-1 min-w-36 mb-2 last:mb-0">
                         <span class="text-sm">
-                            <Tag :value="shipment.picking.status" :severity="PICKING_STATUS_SEVERITY[shipment.picking.status]" />
+                            <Tag :value="shipment.picking.status" :severity="PICKING_STATUS_SEVERITY[shipment.picking.statusId]" />
                             <span class="text-xs text-muted-color ml-1">{{ shipment.picking.doneItemCount }} de {{ shipment.itemCount }} itens</span>
                         </span>
                         <Tag

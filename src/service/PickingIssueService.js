@@ -9,7 +9,7 @@ export const PickingIssueService = {
     },
     listResolutionTypes: () => http.get('/picking-issue-resolution-types'),
     /**
-     * @param {{ resolutionTypeUuid: string, note?: string, substitute?: { materialUuid: string, qty: number } }} resolution
+     * @param {{ resolutionTypeId: number, note?: string, substitute?: { materialUuid: string, qty: number } }} resolution
      * @returns {Promise<{ issue: object, resolvedIssueCount: number, revisionNumber: number|null }>} a substitution resolves every open issue of the shipment
      */
     resolve: (issueUuid, resolution) => http.post(`/picking-issues/${issueUuid}/resolution`, resolution),

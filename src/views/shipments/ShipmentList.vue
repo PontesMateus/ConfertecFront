@@ -189,7 +189,7 @@ onMounted(load);
             </Column>
             <Column field="pickingStatus" header="Separação" sortable class="whitespace-nowrap">
                 <template #body="{ data }">
-                    <Tag v-if="data.pickingStatus" :value="data.pickingStatus" :severity="PICKING_STATUS_SEVERITY[data.pickingStatus]" />
+                    <Tag v-if="data.pickingStatus" :value="data.pickingStatus" :severity="PICKING_STATUS_SEVERITY[data.pickingStatusId]" />
                     <span v-else class="text-muted-color">Não iniciada</span>
                 </template>
             </Column>

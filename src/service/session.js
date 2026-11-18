@@ -25,9 +25,9 @@ export const session = {
     state,
     isAuthenticated: computed(() => Boolean(state.refreshToken)),
 
-    /** True when the route/menu item has no restriction or the current user's type is in the list. */
+    /** True when the route/menu item has no restriction or the current user's type (USER_TYPE id) is in the list. */
     hasUserType(userTypes) {
-        return !userTypes?.length || userTypes.includes(state.user?.userType);
+        return !userTypes?.length || userTypes.includes(state.user?.userTypeId);
     },
 
     setTokens({ accessToken, refreshToken }) {

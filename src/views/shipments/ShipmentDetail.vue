@@ -1,5 +1,5 @@
 <script setup>
-import { PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
+import { PICKING_STATUS, PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
 import { CheckService } from '@/service/CheckService';
 import { ShipmentService } from '@/service/ShipmentService';
 import { useRealtimeRefresh } from '@/service/realtime';
@@ -45,7 +45,7 @@ const checkStatus = computed(() => {
         const status = CHECK_STATUS[latest.status];
         return { ...status, detail: latest.status === 'open' ? `por ${latest.userName}` : null };
     }
-    if (shipment.value?.pickingStatus === 'Concluída') return { label: 'Aguardando conferência', severity: 'warn', detail: null };
+    if (shipment.value?.pickingStatusId === PICKING_STATUS.DONE) return { label: 'Aguardando conferência', severity: 'warn', detail: null };
     return null;
 });
 
@@ -134,7 +134,7 @@ watch(
                             <span>Revisão {{ shipment.revisionNumber ?? '—' }}</span>
                             <span class="flex items-center gap-1">
                                 Separação:
-                                <Tag v-if="shipment.pickingStatus" :value="shipment.pickingStatus" :severity="PICKING_STATUS_SEVERITY[shipment.pickingStatus]" />
+                                <Tag v-if="shipment.pickingStatus" :value="shipment.pickingStatus" :severity="PICKING_STATUS_SEVERITY[shipment.pickingStatusId]" />
                                 <span v-else class="text-color">não atribuída</span>
                             </span>
                             <span class="flex items-center gap-1">

@@ -1,5 +1,5 @@
 <script setup>
-import { PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
+import { PICKING_STATUS, PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
 import { PickingService } from '@/service/PickingService';
 import { realtime } from '@/service/realtime';
 import { session } from '@/service/session';
@@ -72,9 +72,9 @@ const multiple = computed(() => pickings.value.length > 1);
 const batchMine = computed(() => batch.value?.userUuid === myUuid.value);
 const title = computed(() => pickings.value.map((picking) => shipmentLabel(picking.shipment)).join(', '));
 const pendingSaves = computed(() => items.value.some(isSaving));
-const anyInProgress = computed(() => pickings.value.some((picking) => picking.status === 'Em andamento'));
+const anyInProgress = computed(() => pickings.value.some((picking) => picking.statusId === PICKING_STATUS.IN_PROGRESS));
 /** Assigned by the Encarregado and not started yet: the picker starts the whole batch at once */
-const anyPending = computed(() => pickings.value.some((picking) => picking.status === 'Pendente'));
+const anyPending = computed(() => pickings.value.some((picking) => picking.statusId === PICKING_STATUS.PENDING));
 const editablePickingUuids = computed(() => new Set(pickings.value.filter(isEditable).map((picking) => picking.uuid)));
 const openIssues = computed(() => pickings.value.flatMap((picking) => picking.issues.filter((issue) => issue.open).map((issue) => ({ ...issue, pickingUuid: picking.uuid }))));
 
@@ -83,7 +83,7 @@ function shipmentLabel(shipment) {
 }
 
 function isEditable(picking) {
-    return picking.status === 'Em andamento' && picking.userUuid === myUuid.value;
+    return picking.statusId === PICKING_STATUS.IN_PROGRESS && picking.userUuid === myUuid.value;
 }
 
 function entryEditable(entry) {
@@ -514,7 +514,7 @@ onBeforeUnmount(() => {
                             <div>
                                 <div class="flex flex-wrap items-center gap-2">
                                     <h2 v-if="multiple" class="text-lg font-semibold m-0">Remessa {{ shipmentLabel(picking.shipment) }}</h2>
-                                    <Tag :value="picking.status" :severity="PICKING_STATUS_SEVERITY[picking.status]" />
+                                    <Tag :value="picking.status" :severity="PICKING_STATUS_SEVERITY[picking.statusId]" />
                                     <span class="text-sm text-muted-color">Revisão {{ picking.shipment.revisionNumber }}</span>
                                 </div>
                             </div>

@@ -27,7 +27,7 @@ export const PickingService = {
      */
     finish: (pickingUuid, details) => http.post(`/pickings/${pickingUuid}/finish`, details),
     listIssueTypes: () => http.get('/picking-issue-types'),
-    /** @param {{ lineUuid: string, issueTypeUuid: string, qty: number, description?: string }} issue; returns the whole picking */
+    /** @param {{ lineUuid: string, issueTypeId: number, qty: number, description?: string }} issue; returns the whole picking */
     reportIssue: (pickingUuid, issue) => http.post(`/pickings/${pickingUuid}/issues`, issue),
     /** Returns the whole picking */
     withdrawIssue: (pickingUuid, issueUuid) => http.delete(`/pickings/${pickingUuid}/issues/${issueUuid}`)

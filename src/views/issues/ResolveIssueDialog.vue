@@ -1,4 +1,5 @@
 <script setup>
+import { RESOLUTION_TYPE } from '@/constants/pickingIssueResolutionType';
 import { MaterialService } from '@/service/MaterialService';
 import { PickingIssueService } from '@/service/PickingIssueService';
 import { computed, reactive, ref, watch } from 'vue';
@@ -6,9 +7,6 @@ import { computed, reactive, ref, watch } from 'vue';
 // Same limits as the API (PickingIssueController, pickingIssue.routes.js)
 const NOTE_MAX_LENGTH = 1000;
 const PDF_MAX_SIZE_BYTES = 10 * 1024 * 1024;
-// Descriptions seeded in ConfertecData/migrations/009_seed_lookup.sql
-const SUBSTITUTE = 'Substituir material';
-const WAIT_RESTOCK = 'Aguardar reposição';
 
 const props = defineProps({
     /** Open issue being resolved, as listed by GET /picking-issues */
@@ -23,7 +21,7 @@ const visible = defineModel('visible', { type: Boolean, default: false });
 const resolutionTypes = ref([]);
 const materials = ref([]);
 const loadingOptions = ref(false);
-const form = reactive({ resolutionTypeUuid: null, substituteMode: 'material', materialUuid: null, qty: null, file: null, note: '' });
+const form = reactive({ resolutionTypeId: null, substituteMode: 'material', materialUuid: null, qty: null, file: null, note: '' });
 const fileInput = ref(null);
 const dragging = ref(false);
 const submitted = ref(false);
@@ -36,8 +34,7 @@ const substituteModes = [
     { label: 'Nova lista do Sisloc', value: 'list', icon: 'pi pi-file-pdf' }
 ];
 
-const selectedType = computed(() => resolutionTypes.value.find((type) => type.uuid === form.resolutionTypeUuid)?.description);
-const isSubstitute = computed(() => selectedType.value === SUBSTITUTE);
+const isSubstitute = computed(() => form.resolutionTypeId === RESOLUTION_TYPE.SUBSTITUTE);
 const isList = computed(() => isSubstitute.value && form.substituteMode === 'list');
 const isSingleMaterial = computed(() => isSubstitute.value && form.substituteMode === 'material');
 const shipmentLabel = computed(() => props.issue && `${props.issue.shipment.record}-${props.issue.shipment.recordReceipt}`);
@@ -47,14 +44,14 @@ const substituteOptions = computed(() => materials.value.filter((material) => !m
 const typeOptions = computed(() =>
     resolutionTypes.value.map((type) => ({
         ...type,
-        icon: type.description === SUBSTITUTE ? 'pi pi-arrow-right-arrow-left' : 'pi pi-clock',
-        hint: type.description === SUBSTITUTE ? 'Cria uma nova revisão da remessa: troca por um material similar ou por uma nova lista do Sisloc.' : 'A remessa não muda: o separador separa o item quando o material chegar.'
+        icon: type.id === RESOLUTION_TYPE.SUBSTITUTE ? 'pi pi-arrow-right-arrow-left' : 'pi pi-clock',
+        hint: type.id === RESOLUTION_TYPE.SUBSTITUTE ? 'Cria uma nova revisão da remessa: troca por um material similar ou por uma nova lista do Sisloc.' : 'A remessa não muda: o separador separa o item quando o material chegar.'
     }))
 );
 
 watch(visible, async (open) => {
     if (!open || !props.issue) return;
-    Object.assign(form, { resolutionTypeUuid: null, substituteMode: 'material', materialUuid: null, qty: props.issue.qty, file: null, note: '' });
+    Object.assign(form, { resolutionTypeId: null, substituteMode: 'material', materialUuid: null, qty: props.issue.qty, file: null, note: '' });
     submitted.value = false;
     errorMessage.value = '';
     if (resolutionTypes.value.length && materials.value.length) return;
@@ -69,7 +66,7 @@ watch(visible, async (open) => {
 });
 
 const errors = computed(() => ({
-    resolutionTypeUuid: !form.resolutionTypeUuid && 'Escolha a resolução',
+    resolutionTypeId: !form.resolutionTypeId && 'Escolha a resolução',
     materialUuid: isSingleMaterial.value && !form.materialUuid && 'Escolha o material substituto',
     qty: isSingleMaterial.value && !(form.qty > 0) && 'Informe a quantidade do substituto',
     file: isList.value && !form.file && 'Escolha a nova lista em PDF'
@@ -113,7 +110,7 @@ async function save() {
             emit(
                 'resolved',
                 await PickingIssueService.resolve(props.issue.uuid, {
-                    resolutionTypeUuid: form.resolutionTypeUuid,
+                    resolutionTypeId: form.resolutionTypeId,
                     note: form.note,
                     ...(isSingleMaterial.value ? { substitute: { materialUuid: form.materialUuid, qty: form.qty } } : {})
                 })
@@ -147,18 +144,18 @@ async function save() {
                 <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <label
                         v-for="type in typeOptions"
-                        :key="type.uuid"
+                        :key="type.id"
                         class="flex gap-3 p-3 rounded-border border cursor-pointer transition-colors"
-                        :class="form.resolutionTypeUuid === type.uuid ? 'border-primary bg-highlight' : 'border-surface-200 dark:border-surface-700 hover:border-primary'"
+                        :class="form.resolutionTypeId === type.id ? 'border-primary bg-highlight' : 'border-surface-200 dark:border-surface-700 hover:border-primary'"
                     >
-                        <RadioButton v-model="form.resolutionTypeUuid" :value="type.uuid" name="resolution-type" class="mt-0.5" />
+                        <RadioButton v-model="form.resolutionTypeId" :value="type.id" name="resolution-type" class="mt-0.5" />
                         <span class="flex flex-col gap-1">
                             <span class="font-medium"><i :class="type.icon" class="mr-1"></i>{{ type.description }}</span>
                             <span class="text-sm text-muted-color">{{ type.hint }}</span>
                         </span>
                     </label>
                 </div>
-                <small v-if="submitted && errors.resolutionTypeUuid" class="text-red-500">{{ errors.resolutionTypeUuid }}</small>
+                <small v-if="submitted && errors.resolutionTypeId" class="text-red-500">{{ errors.resolutionTypeId }}</small>
             </div>
 
             <template v-if="isSubstitute">
@@ -234,7 +231,7 @@ async function save() {
                     :maxlength="NOTE_MAX_LENGTH"
                     rows="2"
                     autoResize
-                    :placeholder="isSingleMaterial ? 'Ex.: mesma especificação, outra marca' : isList ? 'Ex.: troca combinada com o cliente' : selectedType === WAIT_RESTOCK ? 'Ex.: material chega amanhã de manhã' : ''"
+                    :placeholder="isSingleMaterial ? 'Ex.: mesma especificação, outra marca' : isList ? 'Ex.: troca combinada com o cliente' : form.resolutionTypeId === RESOLUTION_TYPE.WAIT_RESTOCK ? 'Ex.: material chega amanhã de manhã' : ''"
                     fluid
                 />
                 <small class="text-muted-color">O separador vê esta observação na separação.</small>

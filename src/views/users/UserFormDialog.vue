@@ -13,7 +13,7 @@ const props = defineProps({
 const emit = defineEmits(['saved']);
 const visible = defineModel('visible', { type: Boolean, default: false });
 
-const form = reactive({ login: '', name: '', email: '', userTypeUuid: null, password: '' });
+const form = reactive({ login: '', name: '', email: '', userTypeId: null, password: '' });
 const submitted = ref(false);
 const saving = ref(false);
 const errorMessage = ref('');
@@ -27,7 +27,7 @@ watch(visible, (open) => {
         login: props.user?.login ?? '',
         name: props.user?.name ?? '',
         email: props.user?.email ?? '',
-        userTypeUuid: props.user?.userTypeUuid ?? null,
+        userTypeId: props.user?.userTypeId ?? null,
         password: ''
     });
     submitted.value = false;
@@ -38,7 +38,7 @@ const errors = computed(() => ({
     login: !form.login.trim() && 'Informe o login',
     name: !form.name.trim() && 'Informe o nome',
     email: form.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim()) && 'Email inválido',
-    userTypeUuid: !form.userTypeUuid && 'Selecione o tipo',
+    userTypeId: !form.userTypeId && 'Selecione o tipo',
     password: !isEdit.value && form.password.length < PASSWORD_MIN_LENGTH && `A senha deve ter no mínimo ${PASSWORD_MIN_LENGTH} caracteres`
 }));
 const hasErrors = computed(() => Object.values(errors.value).some(Boolean));
@@ -52,7 +52,7 @@ async function save() {
         login: form.login.trim(),
         name: form.name.trim(),
         email: form.email.trim() || null,
-        userTypeUuid: form.userTypeUuid
+        userTypeId: form.userTypeId
     };
 
     saving.value = true;
@@ -91,9 +91,9 @@ async function save() {
 
             <div class="flex flex-col gap-2">
                 <label for="user-type" class="font-medium">Tipo</label>
-                <Select inputId="user-type" v-model="form.userTypeUuid" :options="userTypes" optionLabel="description" optionValue="uuid" placeholder="Selecione" :disabled="isSelf" :invalid="submitted && !!errors.userTypeUuid" fluid />
+                <Select inputId="user-type" v-model="form.userTypeId" :options="userTypes" optionLabel="description" optionValue="id" placeholder="Selecione" :disabled="isSelf" :invalid="submitted && !!errors.userTypeId" fluid />
                 <small v-if="isSelf" class="text-muted-color">Não é possível alterar o próprio tipo de usuário.</small>
-                <small v-else-if="submitted && errors.userTypeUuid" class="text-red-500">{{ errors.userTypeUuid }}</small>
+                <small v-else-if="submitted && errors.userTypeId" class="text-red-500">{{ errors.userTypeId }}</small>
             </div>
 
             <div v-if="!isEdit" class="flex flex-col gap-2">

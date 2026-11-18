@@ -15,7 +15,7 @@ npm run lint      # ESLint + Prettier (--fix); run it on the files you changed
 - `src/service/*Service.js`: one object per API resource, built on `http.js` (bearer token, one refresh-and-retry on 401, API error messages). Pages never call `fetch` directly.
 - `src/views/<feature>/`: pages and their dialogs (`*Dialog.vue` with `v-model:visible`, emitting the saved result).
 - `src/router/index.js`: `meta.userTypes` restricts a route (redirects to *Acesso negado*); the menu item in `src/layout/AppMenu.vue` takes the same `userTypes`. The API checks access anyway; the front only hides what the user can't use.
-- `src/constants/`: mirrors of API values (`USER_TYPE`, status severities).
+- `src/constants/`: mirrors of the API's lookup ids (`USER_TYPE`, `PICKING_STATUS`, `ASSIGNMENT_ROLE`, `RESOLUTION_TYPE`; ConfertecData 028) and status severities keyed by id. Logic compares ids (`picking.statusId === PICKING_STATUS.DONE`, `session.hasUserType` reads `user.userTypeId`), never descriptions: the API sends both (`statusId` + `status`), and the description is only displayed, since the Administrador can rename it. Lookup options (`Select`, radios) use `optionValue="id"`.
 - `src/utils/date.js`: `formatDateTime` and the API's `YYYY-MM-DD` conversions.
 
 ## Conventions

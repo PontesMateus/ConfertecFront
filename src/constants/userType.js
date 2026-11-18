@@ -1,10 +1,10 @@
-// Values of user_type.user_type_description seeded by ConfertecData
+// user_type.user_type_id (ConfertecData 028, ConfertecApi shared/constants/userType.js). Compare ids, never descriptions.
 export const USER_TYPE = Object.freeze({
-    ADMINISTRATOR: 'Administrador',
-    // Builds the batches and assigns their picker and checker
-    SUPERVISOR: 'Encarregado',
-    // Picks and checks, only what is assigned to them
-    OPERATOR: 'Conferente'
+    ADMINISTRATOR: 1,
+    // Encarregado: builds the batches and assigns their picker and checker
+    SUPERVISOR: 2,
+    // Conferente: picks and checks, only what is assigned to them
+    OPERATOR: 3
 });
 
 /** Who builds batches and follows every picking and check */

@@ -1,5 +1,5 @@
 <script setup>
-import { PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
+import { PICKING_STATUS, PICKING_STATUS_SEVERITY } from '@/constants/pickingStatus';
 import { PickingBatchService } from '@/service/PickingBatchService';
 import { ShipmentService } from '@/service/ShipmentService';
 import { UserService } from '@/service/UserService';
@@ -42,12 +42,17 @@ function firstShippingAt(batch) {
 
 const sortedBatches = computed(() => [...batches.value].sort((a, b) => firstShippingAt(a).localeCompare(firstShippingAt(b))));
 
-/** One short status for the batch, from its pickings */
+/**
+ * One short status for the batch, from its pickings: pending while all are, finished ("Concluída") once all are done or
+ * checked, in progress otherwise. Returned as one of its pickings, `{ statusId, status }`, so the label is the API's.
+ */
 function batchStatus(batch) {
-    const statuses = batch.shipments.map((shipment) => shipment.picking.status);
-    if (statuses.every((status) => status === 'Pendente')) return 'Pendente';
-    if (statuses.every((status) => status === 'Concluída' || status === 'Conferida')) return 'Concluída';
-    return 'Em andamento';
+    const pickings = batch.shipments.map((shipment) => shipment.picking);
+    const finished = [PICKING_STATUS.DONE, PICKING_STATUS.CHECKED];
+    let statusId = PICKING_STATUS.IN_PROGRESS;
+    if (pickings.every((picking) => picking.statusId === PICKING_STATUS.PENDING)) statusId = PICKING_STATUS.PENDING;
+    else if (pickings.every((picking) => finished.includes(picking.statusId))) statusId = pickings.some((picking) => picking.statusId === PICKING_STATUS.DONE) ? PICKING_STATUS.DONE : PICKING_STATUS.CHECKED;
+    return pickings.find((picking) => picking.statusId === statusId) ?? pickings[0];
 }
 
 function openIssueCount(batch) {
@@ -202,7 +207,7 @@ onMounted(() => {
                 <Column header="Separação" class="whitespace-nowrap">
                     <template #body="{ data }">
                         <div class="flex flex-col gap-1">
-                            <Tag :value="batchStatus(data)" :severity="PICKING_STATUS_SEVERITY[batchStatus(data)]" class="self-start" />
+                            <Tag :value="batchStatus(data).status" :severity="PICKING_STATUS_SEVERITY[batchStatus(data).statusId]" class="self-start" />
                             <span class="text-sm">{{ data.userName }}</span>
                             <Tag v-if="openIssueCount(data)" :value="openIssueCount(data) === 1 ? '1 falta pendente' : `${openIssueCount(data)} faltas pendentes`" icon="pi pi-exclamation-triangle" severity="warn" class="self-start" />
                         </div>
