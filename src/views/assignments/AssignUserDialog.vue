@@ -41,12 +41,19 @@ const swapUuid = computed(() => {
 const swapping = computed(() => Boolean(userUuid.value) && userUuid.value === swapUuid.value);
 
 /**
+ * A former picker can check while the picking has not started: nobody has picked anything yet (the API allows it too)
+ */
+const formerPickerCanCheck = computed(() => !isPicker.value && !props.batch?.started);
+
+/**
  * The check is blind: anyone ever assigned to the other role of this batch is left out (the API refuses them too),
- * and so is whoever has this role now. The swap candidate is the exception.
+ * except former pickers before the picking starts; whoever has this role now is left out too. The swap candidate
+ * is the exception; without one, the current picker is never the checker.
  */
 const options = computed(() => {
     const otherRole = isPicker.value ? ASSIGNMENT_ROLE.CHECKER : ASSIGNMENT_ROLE.PICKER;
-    const blocked = new Set((props.batch?.assignments ?? []).filter((assignment) => assignment.roleId === otherRole).map((assignment) => assignment.userUuid));
+    const blocked = new Set(formerPickerCanCheck.value ? [] : (props.batch?.assignments ?? []).filter((assignment) => assignment.roleId === otherRole).map((assignment) => assignment.userUuid));
+    if (!isPicker.value && !swapUuid.value) blocked.add(props.batch?.userUuid);
     return props.users.filter((user) => user.uuid !== currentUuid.value && (user.uuid === swapUuid.value || !blocked.has(user.uuid))).map((user) => (user.uuid === swapUuid.value ? { ...user, name: `${user.name} (trocar de função)` } : user));
 });
 
@@ -98,7 +105,9 @@ async function save() {
                 <Select inputId="assign-user" v-model="userUuid" :options="options" optionLabel="name" optionValue="uuid" placeholder="Selecione" filter :invalid="submitted && !!errors.userUuid" fluid />
                 <small v-if="submitted && errors.userUuid" class="text-red-500">{{ errors.userUuid }}</small>
                 <small v-else class="text-muted-color">
-                    Quem já {{ isPicker ? 'foi conferente' : 'foi separador' }} deste grupo não aparece: a conferência é cega.<template v-if="swapUuid"> Até a separação começar, dá para trocar as funções do separador e do conferente.</template>
+                    <template v-if="formerPickerCanCheck">O separador atual não pode conferir: a conferência é cega. Quem deixou de ser separador antes de a separação começar pode conferir.</template>
+                    <template v-else>Quem já {{ isPicker ? 'foi conferente' : 'foi separador' }} deste grupo não aparece: a conferência é cega.</template>
+                    <template v-if="swapUuid"> Até a separação começar, dá para trocar as funções do separador e do conferente.</template>
                 </small>
             </div>
 
