@@ -48,6 +48,16 @@ const finishPicking = ref(null);
 const finishForm = reactive({ customerInspection: false, customerInspectorName: '', companyPersonQty: 1 });
 const finishSubmitted = ref(false);
 const inspectorName = computed(() => finishForm.customerInspectorName.trim());
+/**
+ * The batch's first shipment already finished: its answers (inspection, inspector, document photo, Temec people) are
+ * asked once per batch, so the API applies them to the shipment being finished and the form is not shown
+ */
+const finishSource = computed(() => {
+    const current = finishPicking.value;
+    if (!current) return null;
+    const finished = pickings.value.filter((picking) => picking.uuid !== current.uuid && picking.finishedAt);
+    return finished.sort((a, b) => new Date(a.finishedAt) - new Date(b.finishedAt))[0] ?? null;
+});
 /** Photo of the inspector's ID document, sent as soon as it is taken; required to finish with an inspection */
 const inspectorPhotoUuid = ref(null);
 const inspectorPhotoSending = ref(false);
@@ -430,17 +440,22 @@ function openFinish(picking) {
 async function finish() {
     const picking = finishPicking.value;
     const label = shipmentLabel(picking.shipment);
+    const source = finishSource.value;
     finishSubmitted.value = true;
-    if (finishForm.customerInspection && (!inspectorName.value || !inspectorPhotoUuid.value)) return;
+    if (!source && finishForm.customerInspection && (!inspectorName.value || !inspectorPhotoUuid.value)) return;
     finishing.value = true;
     finishError.value = '';
     try {
-        const finished = await PickingService.finish(picking.uuid, {
-            customerInspection: finishForm.customerInspection,
-            // Only sent with an inspection: the API stores no name without one
-            customerInspectorName: finishForm.customerInspection ? inspectorName.value : undefined,
-            companyPersonQty: finishForm.companyPersonQty ?? 1
-        });
+        // After the batch's first shipment, the API takes its answers anyway: sent the same, for the validation
+        const answers = source
+            ? { customerInspection: source.customerInspection, customerInspectorName: source.customerInspectorName ?? undefined, companyPersonQty: source.companyPersonQty }
+            : {
+                  customerInspection: finishForm.customerInspection,
+                  // Only sent with an inspection: the API stores no name without one
+                  customerInspectorName: finishForm.customerInspection ? inspectorName.value : undefined,
+                  companyPersonQty: finishForm.companyPersonQty ?? 1
+              };
+        const finished = await PickingService.finish(picking.uuid, answers);
         finishVisible.value = false;
         toast.add({ severity: 'success', summary: 'Separação concluída', detail: `Remessa ${label}`, life: 4000 });
         applyPicking(finished);
@@ -759,44 +774,53 @@ onBeforeUnmount(() => {
     <Dialog v-model:visible="finishVisible" :header="multiple ? 'Concluir remessa' : 'Concluir separação'" modal :closable="!finishing" :style="{ width: '30rem' }" :breakpoints="{ '575px': '95vw' }">
         <form v-if="finishPicking" id="finish-form" class="flex flex-col gap-5" @submit.prevent="finish">
             <p class="m-0 text-muted-color">
-                Todos os {{ summaries.get(finishPicking.uuid)?.total }} itens da remessa {{ shipmentLabel(finishPicking.shipment) }} foram separados. Informe como foi a separação.
+                Todos os {{ summaries.get(finishPicking.uuid)?.total }} itens da remessa {{ shipmentLabel(finishPicking.shipment) }} foram separados.
+                <template v-if="!finishSource">Informe como foi a separação{{ multiple ? ': vale para todas as remessas desta tela' : '' }}.</template>
                 <template v-if="multiple">As remessas desta tela são conferidas juntas: a conferência só começa quando todas estiverem concluídas.</template>
             </p>
 
-            <div class="flex items-center justify-between gap-4">
-                <label for="finish-inspection" class="font-medium">Cliente acompanhou a separação</label>
-                <ToggleSwitch inputId="finish-inspection" v-model="finishForm.customerInspection" />
+            <div v-if="finishSource" class="flex flex-col gap-2 rounded-border border border-surface p-3">
+                <span class="text-sm text-muted-color">Mesmos dados da remessa {{ shipmentLabel(finishSource.shipment) }}, já concluída:</span>
+                <span>Cliente acompanhou: {{ finishSource.customerInspection ? `sim${finishSource.customerInspectorName ? ` (${finishSource.customerInspectorName})` : ''}` : 'não' }}</span>
+                <span>Pessoas da Temec: {{ finishSource.companyPersonQty }}</span>
             </div>
 
-            <div v-if="finishForm.customerInspection" class="flex flex-col gap-2">
-                <label for="finish-inspector" class="font-medium">Inspetor do cliente</label>
-                <InputText id="finish-inspector" v-model="finishForm.customerInspectorName" maxlength="255" placeholder="Nome de quem acompanhou" :invalid="finishSubmitted && !inspectorName" fluid />
-                <small v-if="finishSubmitted && !inspectorName" class="text-red-500">Informe o nome do inspetor do cliente</small>
-            </div>
-
-            <div v-if="finishForm.customerInspection" class="flex flex-col gap-2">
-                <span class="font-medium">Documento do inspetor</span>
-                <div class="flex items-center gap-3">
-                    <PhotoThumb v-if="inspectorPhotoUuid" :photoUuid="inspectorPhotoUuid" alt="Foto do documento do inspetor do cliente" sizeClass="w-16 h-16" />
-                    <PhotoButton
-                        :label="inspectorPhotoUuid ? 'Trocar foto' : 'Tirar foto do documento'"
-                        size="small"
-                        :severity="inspectorPhotoUuid ? 'secondary' : undefined"
-                        :outlined="Boolean(inspectorPhotoUuid)"
-                        :loading="inspectorPhotoSending"
-                        :disabled="finishing"
-                        @selected="sendInspectorPhoto"
-                    />
+            <template v-else>
+                <div class="flex items-center justify-between gap-4">
+                    <label for="finish-inspection" class="font-medium">Cliente acompanhou a separação</label>
+                    <ToggleSwitch inputId="finish-inspection" v-model="finishForm.customerInspection" />
                 </div>
-                <small v-if="inspectorPhotoError" class="text-red-500">{{ inspectorPhotoError }}</small>
-                <small v-else-if="finishSubmitted && !inspectorPhotoUuid" class="text-red-500">Tire a foto do documento do inspetor do cliente</small>
-                <small v-else class="text-muted-color">Documento com foto (RG ou CNH) de quem acompanhou.</small>
-            </div>
 
-            <div class="flex flex-col gap-2 sm:w-1/2">
-                <label for="finish-company" class="font-medium">Pessoas da Temec</label>
-                <InputNumber inputId="finish-company" v-model="finishForm.companyPersonQty" :min="1" :max="99" showButtons fluid />
-            </div>
+                <div v-if="finishForm.customerInspection" class="flex flex-col gap-2">
+                    <label for="finish-inspector" class="font-medium">Inspetor do cliente</label>
+                    <InputText id="finish-inspector" v-model="finishForm.customerInspectorName" maxlength="255" placeholder="Nome de quem acompanhou" :invalid="finishSubmitted && !inspectorName" fluid />
+                    <small v-if="finishSubmitted && !inspectorName" class="text-red-500">Informe o nome do inspetor do cliente</small>
+                </div>
+
+                <div v-if="finishForm.customerInspection" class="flex flex-col gap-2">
+                    <span class="font-medium">Documento do inspetor</span>
+                    <div class="flex items-center gap-3">
+                        <PhotoThumb v-if="inspectorPhotoUuid" :photoUuid="inspectorPhotoUuid" alt="Foto do documento do inspetor do cliente" sizeClass="w-16 h-16" />
+                        <PhotoButton
+                            :label="inspectorPhotoUuid ? 'Trocar foto' : 'Tirar foto do documento'"
+                            size="small"
+                            :severity="inspectorPhotoUuid ? 'secondary' : undefined"
+                            :outlined="Boolean(inspectorPhotoUuid)"
+                            :loading="inspectorPhotoSending"
+                            :disabled="finishing"
+                            @selected="sendInspectorPhoto"
+                        />
+                    </div>
+                    <small v-if="inspectorPhotoError" class="text-red-500">{{ inspectorPhotoError }}</small>
+                    <small v-else-if="finishSubmitted && !inspectorPhotoUuid" class="text-red-500">Tire a foto do documento do inspetor do cliente</small>
+                    <small v-else class="text-muted-color">Documento com foto (RG ou CNH) de quem acompanhou.</small>
+                </div>
+
+                <div class="flex flex-col gap-2 sm:w-1/2">
+                    <label for="finish-company" class="font-medium">Pessoas da Temec</label>
+                    <InputNumber inputId="finish-company" v-model="finishForm.companyPersonQty" :min="1" :max="99" showButtons fluid />
+                </div>
+            </template>
 
             <Message v-if="finishError" severity="error" size="small" variant="simple">{{ finishError }}</Message>
         </form>
