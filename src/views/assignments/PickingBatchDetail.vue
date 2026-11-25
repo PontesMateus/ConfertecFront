@@ -55,13 +55,13 @@ const customerCheck = computed(() => (openCheck.value?.byCustomer ? openCheck.va
 // A customer check stays with the customer: changing the checker meanwhile needs no justification
 const assignStarted = computed(() => (assignRole.value === ASSIGNMENT_ROLE.PICKER ? batch.value?.started : Boolean(openCheck.value && !customerCheck.value)));
 /**
- * Every picking finished, no check open and one customer: the customer's inspector can check instead of the checker
- * (the API checks it too)
+ * Not approved yet, no check open and one customer: the customer's inspector can check instead of the checker, even
+ * before or during the picking, finishing once it is done (the API checks it too)
  */
 const canReleaseCustomerCheck = computed(() => {
     const pickings = batch.value?.pickings ?? [];
     const customers = new Set(pickings.map((picking) => picking.shipment.customer?.trim() || null));
-    return pickings.length > 0 && pickings.every((picking) => picking.statusId === PICKING_STATUS.DONE) && !openCheck.value && customers.size === 1 && !customers.has(null);
+    return pickings.length > 0 && pickings.every((picking) => [PICKING_STATUS.PENDING, PICKING_STATUS.IN_PROGRESS, PICKING_STATUS.DONE].includes(picking.statusId)) && !openCheck.value && customers.size === 1 && !customers.has(null);
 });
 const linkExpired = computed(() => customerCheck.value && new Date(customerCheck.value.customerLink.expiresAt) < new Date());
 
@@ -339,7 +339,10 @@ watch(
 
             <Message v-if="canReleaseCustomerCheck" severity="secondary" class="mt-4">
                 <div class="flex flex-wrap items-center justify-between gap-3 w-full">
-                    <span class="text-sm">Separação concluída. O inspetor do cliente pode conferir no lugar do conferente, pelo celular, lendo um QR Code.</span>
+                    <span class="text-sm"
+                        >{{ pickingOpen ? 'O inspetor do cliente pode conferir no lugar do conferente, junto com a separação' : 'Separação concluída. O inspetor do cliente pode conferir no lugar do conferente' }}, pelo celular, lendo um QR
+                        Code.</span
+                    >
                     <Button label="Conferência pelo cliente" icon="pi pi-qrcode" size="small" @click="openRelease" />
                 </div>
             </Message>
@@ -350,6 +353,7 @@ watch(
                         <span class="font-medium">Conferência pelo cliente: {{ customerCheck.userName }}</span>
                         <span class="text-sm">
                             {{ customerCheck.customerLink.started ? `Iniciada · ${customerCheck.countedCount} de ${customerCheck.itemCount} materiais contados` : 'Aguardando o inspetor ler o QR Code' }}
+                            <template v-if="pickingOpen"> · separação em andamento: o inspetor conclui quando ela terminar</template>
                             · {{ linkExpired ? 'link expirado em' : 'link válido até' }} {{ formatDateTime(customerCheck.customerLink.expiresAt) }}
                         </span>
                     </div>
@@ -465,7 +469,8 @@ watch(
         <Dialog v-model:visible="releaseVisible" header="Conferência pelo cliente" modal :style="{ width: '30rem' }" :breakpoints="{ '575px': '95vw' }">
             <form id="release-form" class="flex flex-col gap-4" @submit.prevent="releaseCustomerCheck">
                 <p class="m-0 text-muted-color">
-                    O inspetor do cliente confere {{ batch?.pickings.length > 1 ? 'todas as remessas do grupo' : 'a remessa' }} no lugar do conferente, vendo as quantidades esperadas. A conferência só termina quando todas as contagens baterem.
+                    O inspetor do cliente confere {{ batch?.pickings.length > 1 ? 'todas as remessas do grupo' : 'a remessa' }} no lugar do conferente, vendo as quantidades esperadas. Pode conferir junto com a separação; a conferência só termina
+                    quando a separação estiver concluída e todas as contagens baterem.
                 </p>
                 <div class="flex flex-col gap-2">
                     <label for="release-inspector" class="font-medium">Inspetor do cliente <span class="text-muted-color font-normal">(opcional)</span></label>

@@ -6,12 +6,15 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 // Waits for the inspector to stop typing before saving a count
 const SAVE_DELAY_MS = 600;
+// While the batch is still being picked, the page reloads the check this often (materials may change)
+const PICKING_REFRESH_MS = 30000;
 // localStorage: the session key that binds the link to this browser, so reopening it goes on with the check
 const SESSION_KEY_PREFIX = 'confertec.customerCheck.';
 
 /**
  * Public page, opened from the QR Code: the customer's inspector checks the batch without a login. Not blind: each
- * material shows the expected quantity, and the check only finishes when every count matches.
+ * material shows the expected quantity, and the check only finishes when every count matches. The inspector may count
+ * while the batch is still being picked; finishing waits for the picking to be done.
  */
 const props = defineProps({
     token: { type: String, required: true }
@@ -56,6 +59,9 @@ function isDifferent(item) {
 const matchedCount = computed(() => items.value.filter(isConfirmed).length);
 const pendingSaves = computed(() => items.value.some((item) => item.saveState === 'pending' || item.saveState === 'saving'));
 const allMatch = computed(() => items.value.length > 0 && matchedCount.value === items.value.length);
+const counting = computed(() => check.value?.status === 'open' && check.value.mine && check.value.photoSent);
+const pickingDone = computed(() => Boolean(check.value?.pickingDone));
+const refreshing = ref(false);
 /** Pending: not confirmed yet; an item being saved stays until the save confirms it */
 const visibleItems = computed(() => {
     const term = normalize(search.value.trim());
@@ -94,6 +100,48 @@ function applyCheck(value) {
     if (!name.value) name.value = value.inspectorName ?? '';
     items.value = value.items.map((item) => ({ ...item, draftQty: item.countedQty, saveState: 'saved', errorMessage: '', seq: 0 })).sort(byDescription);
 }
+
+/**
+ * Applies a reloaded check without losing what the inspector is typing: a material being saved keeps its local
+ * state (the same object, which its save updates); the others take the server's.
+ */
+function mergeCheck(value) {
+    check.value = value;
+    const local = new Map(items.value.map((item) => [item.materialUuid, item]));
+    items.value = value.items
+        .map((item) => {
+            const current = local.get(item.materialUuid);
+            if (!current) return { ...item, draftQty: item.countedQty, saveState: 'saved', errorMessage: '', seq: 0 };
+            current.expectedQty = item.expectedQty;
+            if (current.saveState === 'saved' || current.saveState === 'error') {
+                Object.assign(current, { countedQty: item.countedQty, matches: item.matches, draftQty: item.countedQty });
+            }
+            return current;
+        })
+        .sort(byDescription);
+}
+
+/** Reloads the check while the picking goes on: quantities and materials may change with it */
+async function refresh() {
+    if (refreshing.value) return;
+    refreshing.value = true;
+    try {
+        mergeCheck(await CustomerCheckService.get(props.token, sessionKey));
+    } catch {
+        // Kept as it is; the next refresh or the inspector's next action tries again
+    } finally {
+        refreshing.value = false;
+    }
+}
+
+let refreshTimer = null;
+watch(
+    () => counting.value && !pickingDone.value,
+    (active) => {
+        clearInterval(refreshTimer);
+        refreshTimer = active ? setInterval(refresh, PICKING_REFRESH_MS) : null;
+    }
+);
 
 async function load() {
     loading.value = true;
@@ -176,6 +224,8 @@ async function finish() {
         applyCheck(await CustomerCheckService.finish(props.token, sessionKey));
     } catch (error) {
         finishError.value = error.message;
+        // The picking may have changed since the page last loaded
+        refresh();
     } finally {
         finishing.value = false;
     }
@@ -190,7 +240,10 @@ function flushPendingSaves() {
 }
 
 watch(() => props.token, load, { immediate: true });
-onBeforeUnmount(flushPendingSaves);
+onBeforeUnmount(() => {
+    clearInterval(refreshTimer);
+    flushPendingSaves();
+});
 </script>
 
 <template>
@@ -230,7 +283,8 @@ onBeforeUnmount(flushPendingSaves);
             <!-- Not started: confirm the name -->
             <form v-else-if="!check.mine" class="card mb-0 flex flex-col gap-4" @submit.prevent="start">
                 <p class="m-0">
-                    Você vai conferir os materiais separados para o cliente. Para cada material aparece a quantidade esperada: conte e informe a quantidade encontrada. A conferência só pode ser concluída quando todas as quantidades baterem.
+                    Você vai conferir os materiais separados para o cliente. Para cada material aparece a quantidade esperada: conte e informe a quantidade encontrada. Você pode conferir junto com a separação; a conferência só pode ser concluída
+                    quando a separação terminar e todas as quantidades baterem.
                 </p>
                 <div class="flex flex-col gap-2">
                     <label for="customer-name" class="font-medium">Seu nome completo</label>
@@ -269,6 +323,13 @@ onBeforeUnmount(flushPendingSaves);
                     </div>
                 </div>
 
+                <Message v-if="!pickingDone" severity="info">
+                    <div class="flex flex-col gap-2">
+                        <span>A separação ainda está em andamento. Você pode ir contando; a conferência pode ser concluída quando a separação terminar.</span>
+                        <Button label="Atualizar" icon="pi pi-refresh" size="small" severity="secondary" class="self-start" :loading="refreshing" @click="refresh" />
+                    </div>
+                </Message>
+
                 <div v-if="!visibleItems.length" class="card mb-0 text-center text-muted-color">
                     {{ search.trim() ? 'Nenhum material encontrado.' : 'Todos os materiais conferem.' }}
                 </div>
@@ -299,12 +360,22 @@ onBeforeUnmount(flushPendingSaves);
                         />
                     </div>
                     <small v-if="item.saveState === 'error'" class="text-red-500">{{ item.errorMessage }}</small>
-                    <small v-else-if="isDifferent(item)" class="text-orange-600 dark:text-orange-400"> Diferente do esperado. Conte de novo; se faltar ou sobrar material, avise a Temec. </small>
+                    <small v-else-if="isDifferent(item)" class="text-orange-600 dark:text-orange-400">
+                        {{ pickingDone ? 'Diferente do esperado. Conte de novo; se faltar ou sobrar material, avise a Temec.' : 'Diferente do esperado. A separação ainda está em andamento: conte de novo quando ela terminar.' }}
+                    </small>
                     <small v-else-if="isConfirmed(item)" class="text-green-600 dark:text-green-400"><i class="pi pi-check text-xs"></i> Confere</small>
                 </div>
 
                 <Message v-if="finishError" severity="error">{{ finishError }}</Message>
-                <Button label="Concluir conferência" icon="pi pi-check" size="large" :disabled="!allMatch || pendingSaves" :loading="finishing" v-tooltip.top="allMatch ? null : 'Todas as quantidades precisam bater com a esperada'" @click="finish" />
+                <Button
+                    label="Concluir conferência"
+                    icon="pi pi-check"
+                    size="large"
+                    :disabled="!allMatch || pendingSaves || !pickingDone"
+                    :loading="finishing"
+                    v-tooltip.top="!pickingDone ? 'Aguarde a separação terminar' : allMatch ? null : 'Todas as quantidades precisam bater com a esperada'"
+                    @click="finish"
+                />
             </template>
 
             <p class="text-center text-xs text-muted-color m-0">Temec · Confertec</p>
